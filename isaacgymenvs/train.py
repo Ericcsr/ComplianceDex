@@ -93,10 +93,6 @@ def launch_rlg_hydra(cfg: DictConfig):
     from rl_games.common import env_configurations, vecenv
     from rl_games.torch_runner import Runner
     from rl_games.algos_torch import model_builder
-    from isaacgymenvs.learning import amp_continuous
-    from isaacgymenvs.learning import amp_players
-    from isaacgymenvs.learning import amp_models
-    from isaacgymenvs.learning import amp_network_builder
     import isaacgymenvs
 
 
@@ -185,11 +181,6 @@ def launch_rlg_hydra(cfg: DictConfig):
     # register new AMP network builder and agent
     def build_runner(algo_observer):
         runner = Runner(algo_observer)
-        runner.algo_factory.register_builder('amp_continuous', lambda **kwargs : amp_continuous.AMPAgent(**kwargs))
-        runner.player_factory.register_builder('amp_continuous', lambda **kwargs : amp_players.AMPPlayerContinuous(**kwargs))
-        model_builder.register_model('continuous_amp', lambda network, **kwargs : amp_models.ModelAMPContinuous(network))
-        model_builder.register_network('amp', lambda **kwargs : amp_network_builder.AMPBuilder())
-
         return runner
 
     # convert CLI arguments into dictionary

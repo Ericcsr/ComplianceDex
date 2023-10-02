@@ -279,6 +279,7 @@ class Ant(VecTask):
         self.reset_buf[env_ids] = 0
 
     def pre_physics_step(self, actions):
+        print("Action size:", actions.shape)
         self.actions = actions.clone().to(self.device)
         forces = self.actions * self.joint_gears * self.power_scale
         force_tensor = gymtorch.unwrap_tensor(forces)

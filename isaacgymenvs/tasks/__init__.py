@@ -27,25 +27,12 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 from .ant import Ant
-from .anymal import Anymal
-from .anymal_terrain import AnymalTerrain
-from .ball_balance import BallBalance
-from .cartpole import Cartpole 
-from .factory.factory_task_gears import FactoryTaskGears
-from .factory.factory_task_insertion import FactoryTaskInsertion
-from .factory.factory_task_nut_bolt_pick import FactoryTaskNutBoltPick
-from .factory.factory_task_nut_bolt_place import FactoryTaskNutBoltPlace
-from .factory.factory_task_nut_bolt_screw import FactoryTaskNutBoltScrew
 from .franka_cabinet import FrankaCabinet
 from .franka_cube_stack import FrankaCubeStack
-from .humanoid import Humanoid
-from .humanoid_amp import HumanoidAMP
-from .ingenuity import Ingenuity
-from .quadcopter import Quadcopter
 from .shadow_hand import ShadowHand
 from .allegro_hand import AllegroHand
+from .allegro_tip import AllegroTip
 from .dextreme.allegro_hand_dextreme import AllegroHandDextremeManualDR, AllegroHandDextremeADR
-from .trifinger import Trifinger
 
 from .allegro_kuka.allegro_kuka_reorientation import AllegroKukaReorientation
 from .allegro_kuka.allegro_kuka_regrasping import AllegroKukaRegrasping
@@ -53,8 +40,6 @@ from .allegro_kuka.allegro_kuka_throw import AllegroKukaThrow
 from .allegro_kuka.allegro_kuka_two_arms_regrasping import AllegroKukaTwoArmsRegrasping
 from .allegro_kuka.allegro_kuka_two_arms_reorientation import AllegroKukaTwoArmsReorientation
 
-from .industreal.industreal_task_pegs_insert import IndustRealTaskPegsInsert
-from .industreal.industreal_task_gears_insert import IndustRealTaskGearsInsert
 
 
 def resolve_allegro_kuka(cfg, *args, **kwargs):
@@ -92,23 +77,8 @@ isaacgym_task_map = {
     "AllegroHandManualDR": AllegroHandDextremeManualDR,
     "AllegroHandADR": AllegroHandDextremeADR,
     "Ant": Ant,
-    "Anymal": Anymal,
-    "AnymalTerrain": AnymalTerrain,
-    "BallBalance": BallBalance,
-    "Cartpole": Cartpole,
-    "FactoryTaskGears": FactoryTaskGears,
-    "FactoryTaskInsertion": FactoryTaskInsertion,
-    "FactoryTaskNutBoltPick": FactoryTaskNutBoltPick,
-    "FactoryTaskNutBoltPlace": FactoryTaskNutBoltPlace,
-    "FactoryTaskNutBoltScrew": FactoryTaskNutBoltScrew,
-    "IndustRealTaskPegsInsert": IndustRealTaskPegsInsert,
-    "IndustRealTaskGearsInsert": IndustRealTaskGearsInsert,
     "FrankaCabinet": FrankaCabinet,
     "FrankaCubeStack": FrankaCubeStack,
-    "Humanoid": Humanoid,
-    "HumanoidAMP": HumanoidAMP,
-    "Ingenuity": Ingenuity,
-    "Quadcopter": Quadcopter,
     "ShadowHand": ShadowHand,
-    "Trifinger": Trifinger,
+    "AllegroTip": AllegroTip
 }
