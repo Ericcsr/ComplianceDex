@@ -38,11 +38,12 @@ from isaacgymenvs.utils.torch_jit_utils import scale, unscale, quat_mul, quat_co
 from isaacgymenvs.tasks.base.vec_task import VecTask
 
 # TODO: remove it once actual tip pose is available
-TIP_POSES = [[-0.05,0.0, 0.0], [0.05, -0.05, 0.0], [0.05, 0.0, 0.0], [0.05, 0.05, 0.0]]
+TIP_POSES = [[-0.05,0.0, 0.2], [0.05, -0.05, 0.2], [0.05, 0.0, 0.2], [0.05, 0.05, 0.2]]
+IDLE_POSES = [[-0.3, 0.3, 0.15], [-0.3, -0.3, 0.15], [0.3, -0.3, 0.15], [0.3, -0.3, 0.15]]
 
 class AllegroTip(VecTask):
 
-    def __init__(self, cfg, rl_device, sim_device, graphics_device_id, headless, virtual_screen_capture, force_render):
+    def __init__(self, cfg, rl_device, sim_device, graphics_device_id, headless, virtual_screen_capture, force_render, tip_poses = TIP_POSES, idle_poses = IDLE_POSES):
 
         self.cfg = cfg
 
@@ -74,7 +75,8 @@ class AllegroTip(VecTask):
         self.use_relative_control = self.cfg["env"]["useRelativeControl"]
         self.act_moving_average = self.cfg["env"]["actionsMovingAverage"]
         self.num_fingers = self.cfg["env"]["numFingers"]
-        self.init_tips = TIP_POSES # TODO: remove me
+        self.init_tips = tip_poses
+        self.idle_tip_pose = torch.tensor(idle_poses, device=sim_device).repeat(self.cfg["env"]["numEnvs"],1,1)
 
         self.debug_viz = self.cfg["env"]["enableDebugVis"]
 
@@ -161,7 +163,7 @@ class AllegroTip(VecTask):
         self.gym.refresh_rigid_body_state_tensor(self.sim)
 
         # create some wrapper tensors for different slices
-        self.allegro_hand_default_dof_pos = torch.zeros(self.num_allegro_tip_dofs * self.num_fingers, dtype=torch.float, device=self.device)
+        self.allegro_hand_default_dof_pos = torch.tensor(self.init_tips, dtype=torch.float, device=self.device).flatten()
         self.dof_state = gymtorch.wrap_tensor(dof_state_tensor)
         self.allegro_hand_dof_state = self.dof_state.view(self.num_envs, -1, 2)[:, :self.num_allegro_hand_dofs]
         self.allegro_hand_dof_pos = self.allegro_hand_dof_state[..., 0]
@@ -235,7 +237,6 @@ class AllegroTip(VecTask):
         asset_options.collapse_fixed_joints = True
         asset_options.disable_gravity = True
         asset_options.thickness = 0.001
-        asset_options.angular_damping = 0.01
 
         if self.physics_engine == gymapi.SIM_PHYSX:
             asset_options.use_physx_armature = True
@@ -260,7 +261,6 @@ class AllegroTip(VecTask):
         self.allegro_tip_dof_default_pos = []
         self.allegro_tip_dof_default_vel = []
         self.sensors = []
-        sensor_pose = gymapi.Transform()
 
         for i in range(self.num_allegro_tip_dofs):
             self.allegro_tip_dof_lower_limits.append(allegro_tip_dof_props['lower'][i])
@@ -293,7 +293,7 @@ class AllegroTip(VecTask):
         object_asset_options = gymapi.AssetOptions()
         object_asset = self.gym.load_asset(self.sim, asset_root, object_asset_file, object_asset_options)
 
-        object_asset_options.disable_gravity = True # TODO: May be false
+        object_asset_options.disable_gravity = True
         goal_asset = self.gym.load_asset(self.sim, asset_root, object_asset_file, object_asset_options)
 
         allegro_tip_start_poses = []
@@ -305,7 +305,7 @@ class AllegroTip(VecTask):
 
         # Object should be placed at the frame center
         object_start_pose = gymapi.Transform()
-        object_start_pose.p = gymapi.Vec3(0, 0, 0)
+        object_start_pose.p = gymapi.Vec3(0, 0, 0.3)
 
         self.goal_displacement = gymapi.Vec3(-0.2, -0.06, 0.12)
         self.goal_displacement_tensor = to_torch(
@@ -346,10 +346,14 @@ class AllegroTip(VecTask):
             for fid in range(self.num_fingers):
                 allegro_tip_start_pose = allegro_tip_start_poses[fid]
                 # TODO: May be segmentation id is necessary
-                allegro_tip_actor = self.gym.create_actor(env_ptr, allegro_tip_asset, allegro_tip_start_pose, f"tip:{fid}", i, -1, 0)
+                default_tip_tf = gymapi.Transform()
+                default_tip_tf.p = gymapi.Vec3(0, 0, 0)
+                default_tip_tf.r = gymapi.Quat(1, 0, 0, 0)
+                allegro_tip_actor = self.gym.create_actor(env_ptr, allegro_tip_asset, default_tip_tf, f"tip:{fid}", group=i, filter=fid)
                 hand_state = [allegro_tip_start_pose.p.x, allegro_tip_start_pose.p.y, allegro_tip_start_pose.p.z,
                               allegro_tip_start_pose.r.x, allegro_tip_start_pose.r.y, allegro_tip_start_pose.r.z, allegro_tip_start_pose.r.w,
                               0, 0, 0, 0, 0, 0]
+                self.gym.set_actor_dof_states(env_ptr, allegro_tip_actor, hand_state[0:3] ,gymapi.STATE_POS)
                 hand_start_state.append(hand_state)
                 self.prev_target_poses[i,fid] = torch.tensor(hand_state[0:3], dtype=torch.float, device=self.device)
                 self.gym.set_actor_dof_properties(env_ptr, allegro_tip_actor, allegro_tip_dof_props)
@@ -558,12 +562,13 @@ class AllegroTip(VecTask):
 
         # reset object
         self.root_state_tensor[self.object_indices[env_ids]] = self.object_init_state[env_ids].clone()
-        self.root_state_tensor[self.object_indices[env_ids], 0:2] = self.object_init_state[env_ids, 0:2] + \
-            self.reset_position_noise * rand_floats[:, 0:2]
-        self.root_state_tensor[self.object_indices[env_ids], self.up_axis_idx] = self.object_init_state[env_ids, self.up_axis_idx] + \
-            self.reset_position_noise * rand_floats[:, self.up_axis_idx]
+        self.root_state_tensor[self.object_indices[env_ids], 0:2] = self.object_init_state[env_ids, 0:2] #+ \
+            #self.reset_position_noise * rand_floats[:, 0:2]
+        self.root_state_tensor[self.object_indices[env_ids], self.up_axis_idx] = self.object_init_state[env_ids, self.up_axis_idx] #+ \
+            #self.reset_position_noise * rand_floats[:, self.up_axis_idx]
 
-        new_object_rot = randomize_rotation(rand_floats[:, 3], rand_floats[:, 4], self.x_unit_tensor[env_ids], self.y_unit_tensor[env_ids])
+        #new_object_rot = randomize_rotation(rand_floats[:, 3], rand_floats[:, 4], self.x_unit_tensor[env_ids], self.y_unit_tensor[env_ids])
+        new_object_rot = randomize_rotation(rand_floats[:,3]*0.0, rand_floats[:,4]*0.0, self.x_unit_tensor[env_ids], self.y_unit_tensor[env_ids])
         if self.object_type == "pen":
             rand_angle_y = torch.tensor(0.3)
             new_object_rot = randomize_rotation_pen(rand_floats[:, 3], rand_floats[:, 4], rand_angle_y,
@@ -591,7 +596,7 @@ class AllegroTip(VecTask):
         delta_min = self.allegro_hand_dof_lower_limits - self.allegro_hand_dof_default_pos
         rand_delta = delta_min + (delta_max - delta_min) * 0.5 * (rand_floats[:, 5:5+self.num_allegro_hand_dofs] + 1)
 
-        pos = self.allegro_hand_default_dof_pos + self.reset_dof_pos_noise * rand_delta
+        pos = self.allegro_hand_default_dof_pos + self.reset_dof_pos_noise * rand_delta * 0.01
         self.allegro_hand_dof_pos[env_ids, :] = pos
         self.prev_target_poses[env_ids] = pos.view(len(env_ids), self.num_fingers, 3) # Should be with all fingers
         self.allegro_hand_dof_vel[env_ids, :] = self.allegro_hand_dof_default_vel + \
@@ -635,10 +640,12 @@ class AllegroTip(VecTask):
         # things needed regardless of stage
         # New action start
         # Action: [[init_poses, target_poses, detach_flags, compliances],..] between -1 to 1
-        # TODO: Will there be any offset?
+        # Alternating stepping:
+        # 1). First step determine which finger to detach;
+        # 2). Second step determine which finger to compliantly attach to where
         if actions is not None: # INSTANT
             self.update_action=False
-            self.actions = actions.clone().to(self.device)    
+            self.actions = actions.clone().to(self.device)
             offset = 2 * self.num_dofs + self.num_fingers
             compliance = scale(self.actions[:,offset:offset+self.num_fingers], self.compliance_lb, self.compliance_ub)
             self.init_poses = scale(self.actions[:,:self.num_dofs], 
@@ -648,9 +655,18 @@ class AllegroTip(VecTask):
             self.target_poses = scale(self.actions[:,self.num_dofs:2*self.num_dofs], 
                             self.allegro_hand_dof_lower_limits[self.actuated_dof_indices],
                             self.allegro_hand_dof_upper_limits[self.actuated_dof_indices]).view(-1, self.num_fingers, 3)
+            total_prev_detach = self.prev_detach_flag.sum(dim=-1).bool() # whether there are detached fingers previously [num_envs,]
+            # If total_prev_detach, current must all attach
+            # If not total_prev_detach, current can have at most one detach
+            # GPT_WARN: may be buggy or slow
+            detach_signal = self.actions[:,2 * self.num_dofs:2 * self.num_dofs+self.num_fingers]
+            max_vals, max_indices = torch.max(detach_signal, dim=1, keepdim=True)
+            mask_greater_than_zero = max_vals > 0.0
+            self.detach_flag = torch.zeros_like(detach_signal, dtype=torch.bool, device=self.device)
+            self.detach_flag.scatter_(1, max_indices, mask_greater_than_zero)
+            self.detach_flag[total_prev_detach] = self.detach_flag[total_prev_detach].fill_(False)
 
-            self.detach_flag = (self.actions[:,2 * self.num_dofs:2 * self.num_dofs+self.num_fingers] >= 0.5) # [num_envs, num_fingers]
-            self.actual_target_pose = torch.ones_like(self.target_poses) * 10.0 # default pose
+            self.actual_target_pose = self.idle_tip_pose.clone() # default pose
             self.compliance_xyz = torch.ones(self.num_envs, self.num_fingers , 3, device=self.device) * 3.0
             
             
@@ -665,7 +681,7 @@ class AllegroTip(VecTask):
             compliance = scale(self.actions[:, offset:offset+self.num_fingers], self.compliance_lb, self.compliance_ub)
             mask = self.prev_detach_flag + (~self.detach_flag)
             self.compliance_xyz = torch.ones(self.num_envs, self.num_fingers , 3, device=self.device) * 3.0
-            self.actual_target_pose = torch.ones_like(self.target_poses, device=self.device) * 10.0
+            self.actual_target_pose = self.idle_tip_pose.clone()
             self.compliance_xyz[mask] = (self.init_poses[mask] - self.target_poses[mask])#.reshape(compliance.shape[0], self.num_fingers , 3)
             norm = torch.norm(self.compliance_xyz[mask], dim=-1)
             # The break down should update in real time in case of contact point movement
@@ -749,7 +765,6 @@ class AllegroTip(VecTask):
                 self.gym.add_lines(self.viewer, self.envs[i], 1, [p0[0], p0[1], p0[2], objectx[0], objectx[1], objectx[2]], [0.85, 0.1, 0.1])
                 self.gym.add_lines(self.viewer, self.envs[i], 1, [p0[0], p0[1], p0[2], objecty[0], objecty[1], objecty[2]], [0.1, 0.85, 0.1])
                 self.gym.add_lines(self.viewer, self.envs[i], 1, [p0[0], p0[1], p0[2], objectz[0], objectz[1], objectz[2]], [0.1, 0.1, 0.85])
-
     # Redefine stepping here
     def step(self, actions: torch.Tensor):
         """Step the physics of the environment.

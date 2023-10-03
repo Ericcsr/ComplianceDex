@@ -7,11 +7,11 @@
     </inertial>
   </link>
   <joint name="root_aux" type="prismatic">
-    <origin xyz="0 0 1" rpy="0 0 0"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
     <parent link="root"/>
     <child link="aux"/>
     <axis xyz="1 0 0"/>
-    <limit effort="100" velocity="3.0" lower="-20.0" upper="20.0"/>
+    <limit effort="100" velocity="3.0" lower="-0.3" upper="0.3"/>
   </joint>
   <link name="aux">
     <inertial>
@@ -20,11 +20,11 @@
     </inertial>
   </link>
   <joint name="aux_aux1" type="prismatic">
-    <origin xyz="0 0 1" rpy="0 0 0"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
     <parent link="aux"/>
     <child link="aux1"/>
     <axis xyz="0 1 0"/>
-    <limit effort="100" velocity="3.0" lower="-20.0" upper="20.0"/>
+    <limit effort="100" velocity="3.0" lower="-0.3" upper="0.3"/>
   </joint>
   <link name="aux1">
     <inertial>
@@ -33,23 +33,23 @@
     </inertial>
   </link>
   <joint name="aux1_ball" type="prismatic">
-    <origin xyz="0 0 1" rpy="0 0 0"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
     <parent link="aux1"/>
     <child link="ball"/>
     <axis xyz="0 0 1"/>
-    <limit effort="100" velocity="3.0" lower="-20.0" upper="20.0"/>
+    <limit effort="100" velocity="3.0" lower="0.0" upper="0.6"/>
   </joint>
   <link name="ball">
     <visual>
       <origin xyz="0 0 0"/>
       <geometry>
-        <sphere radius="0.2"/>
+        <sphere radius="0.01"/>
       </geometry>
     </visual>
     <collision>
       <origin xyz="0 0 0"/>
       <geometry>
-        <sphere radius="0.2"/>
+        <sphere radius="0.01"/>
       </geometry>
     </collision>
     <inertial>
