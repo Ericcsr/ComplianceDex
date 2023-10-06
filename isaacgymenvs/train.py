@@ -129,7 +129,7 @@ def launch_rlg_hydra(cfg: DictConfig):
             cfg.force_render,
             cfg,
             **kwargs,
-        )
+        ) # Isaac Gym task env created
         if cfg.capture_video:
             envs.is_vector_env = True
             envs = gym.wrappers.RecordVideo(

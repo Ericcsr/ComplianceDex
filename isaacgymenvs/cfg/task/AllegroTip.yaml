@@ -56,6 +56,8 @@ env:
   maxConsecutiveSuccesses: 0
   numFingers: 4
   maxSubsteps: 100
+  contactForceThresh: 0.5
+  frictionMu: 0.5
 
   asset:
     assetFileName: "urdf/tip.urdf"
