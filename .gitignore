@@ -31,3 +31,5 @@ runs/
 outputs/
 *.hydra*
 /isaacgymenvs/wandb
+/thirdparty/TorchSDF/build
+/thirdparty/TorchSDF/torchsdf.egg-info

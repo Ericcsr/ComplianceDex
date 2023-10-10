@@ -37,6 +37,7 @@ from isaacgymenvs.utils.torch_jit_utils import scale, unscale, quat_mul, quat_co
     to_torch, torch_rand_float, tensor_clamp, quat_apply, quat_rotate, quat_rotate_inverse
 from isaacgymenvs.tasks.base.vec_task import VecTask
 import open3d as o3d
+from torchsdf import compute_sdf
 
 # TODO: remove it once actual tip pose is available
 TIP_POSES = [[-0.0375,0.0, 0.0325], [0.0375, -0.03, 0.0325], [0.0375, 0.0, 0.0325], [0.0375, 0.03, 0.0325]]
@@ -99,6 +100,7 @@ class AllegroTip(VecTask):
         self.av_factor = self.cfg["env"].get("averFactor", 0.1)
         self.max_substeps = self.cfg["env"].get("maxSubsteps", 100)
         self.contact_force_thresh = self.cfg["env"].get("contactForceThresh", 0.5) # At least 0.5 N force?
+        self.contact_dist_thresh = self.cfg["env"].get("contactDistThresh", 0.01)
         self.friction_mu = self.cfg["env"].get("frictionMu", 0.5)
 
         self.object_type = self.cfg["env"]["objectType"]
@@ -117,14 +119,12 @@ class AllegroTip(VecTask):
             self.asset_files_dict["egg"] = self.cfg["env"]["asset"].get("assetFileNameEgg", self.asset_files_dict["egg"])
             self.asset_files_dict["pen"] = self.cfg["env"]["asset"].get("assetFileNamePen", self.asset_files_dict["pen"])
         # Load 3D objects
-        # asset_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../assets')
-        # object_mesh_path = self.cfg["env"].get("objectMeshPath", "urdf/objects/meshes/cube_multicolor.obj")
-        # object_mesh = o3d.io.read_triangle_mesh(asset_root+object_mesh_path).scale(0.065,center=[0,0,0])
-        # object_mesh.compute_vertex_normals()
-        # object_mesh.compute_triangle_normals()
-        # self.object_pcd = object_mesh.sample_points_poisson_disk(512, use_triangle_normal=True)
-        # self.object_points = torch.from_numpy(torch.asarray(self.object_pcd.points))
-        # self.object_normals = torch.from_numpy(torch.asarray(self.object_pcd.normals))
+        asset_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../assets')
+        object_mesh_path = self.cfg["env"].get("objectMeshPath", "urdf/objects/meshes/cube_multicolor.obj")
+        object_mesh = o3d.io.read_triangle_mesh(asset_root+"/"+object_mesh_path).scale(0.065,center=[0,0,0])
+        triangles = np.asarray(object_mesh.triangles)
+        vertices = np.asarray(object_mesh.vertices)
+        self.face_vertices = vertices[triangles.flatten()].reshape(len(triangles), 3, 3)
 
         # can be "full_no_vel", "full", "full_state"
         self.obs_type = self.cfg["env"]["observationType"]
@@ -906,12 +906,14 @@ class AllegroTip(VecTask):
         """
         tip_pose_local = quat_rotate_inverse(object_pose[:,3:7].repeat(1,self.num_fingers).view(self.num_envs, self.num_fingers,4),
                                              (tip_poses - object_pose[:,:3].unsqueeze(1)).view(-1,3))
+        dis, _,_,_ = compute_sdf(tip_pose_local, self.face_vertices)
+        mask = dis > self.contact_dist_thresh
         
-        compliance = compliance.repeat_interleave(3,dim=1).view(self.num_envs, self.num_fingers, 3)
-        F = torch.norm(compliance * (tip_targets - tip_poses), dim=-1)
-        if self.debug:
-            print("Contact force:",F)
-        mask = (F < self.contact_force_thresh)
+        # compliance = compliance.repeat_interleave(3,dim=1).view(self.num_envs, self.num_fingers, 3)
+        # F = torch.norm(compliance * (tip_targets - tip_poses), dim=-1)
+        # if self.debug:
+        #     print("Contact force:",F)
+        # mask = (F < self.contact_force_thresh)
         return mask
         
     # In debug mode assume num_env = 1
