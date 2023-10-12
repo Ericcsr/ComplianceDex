@@ -43,8 +43,8 @@ from torchsdf import compute_sdf
 TIP_POSES = [[-0.0375,0.0, 0.0325], [0.0375, -0.03, 0.0325], [0.0375, 0.0, 0.0325], [0.0375, 0.03, 0.0325]]
 TAR_POSES = [[-0.02,0.0, 0.0325], [0.02, -0.03, 0.0325], [0.02, 0.0, 0.0325], [0.02, 0.03, 0.0325]]
 TIP_Z_OFFSET = 0.1
-DEFAULT_COMPLIANCE = 40.0
-IDLE_POSES = [[-0.3, 0.3, 0.15], [-0.3, -0.3, 0.15], [0.3, -0.3, 0.15], [0.3, -0.3, 0.15]]
+DEFAULT_COMPLIANCE = 50.0
+IDLE_POSES = [[-0.15, 0.15, 0.15], [0.15, -0.15, 0.15], [0.15, 0.0, 0.15], [0.15, 0.15, 0.15]]
 
 class AllegroTip(VecTask):
 
@@ -102,6 +102,7 @@ class AllegroTip(VecTask):
         self.contact_force_thresh = self.cfg["env"].get("contactForceThresh", 0.5) # At least 0.5 N force?
         self.contact_dist_thresh = self.cfg["env"].get("contactDistThresh", 0.015)
         self.friction_mu = self.cfg["env"].get("frictionMu", 0.5)
+        self.preparation_steps = self.cfg["env"].get("preparationStep", 10)
 
         self.object_type = self.cfg["env"]["objectType"]
         assert self.object_type in ["block", "egg", "pen"]
@@ -446,7 +447,7 @@ class AllegroTip(VecTask):
             self.success_tolerance, self.reach_goal_bonus, self.fall_dist, self.fall_penalty,
             self.max_consecutive_successes, self.av_factor, (self.object_type == "pen")
         )
-        compliance_penalty = torch.sum(actions[:,26:] ** 2, dim=-1) # Penalize being stiff
+        compliance_penalty = torch.sum(actions[:,28:] ** 2, dim=-1) # Penalize being stiff
         pd_target = actions[:,12:24].reshape(-1,3)
         pd_target_local = quat_rotate_inverse(self.object_rot.repeat(1,4).view(-1,4), pd_target - self.object_pos.repeat(1,4).view(-1,3))
         dist, sign, _, _ = compute_sdf(pd_target_local * 10.0, self.face_vertices * 10.0)
@@ -672,7 +673,7 @@ class AllegroTip(VecTask):
         if self.debug:
             print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
             print("System reset!")
-            print("Hand indices:",hand_indices, self.dof_state, pos)
+            #print("Hand indices:",hand_indices, self.dof_state, pos)
             print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
 
     # TODO: Clarify the finite state machine
@@ -693,7 +694,7 @@ class AllegroTip(VecTask):
 
         if len(env_ids) > 0:
             if self.debug:
-                print("Actions:",actions)
+                print("Env ids:", env_ids)
             self.reset_idx(env_ids, goal_env_ids)
 
         object_pose = self.root_state_tensor[self.object_indices, 0:7]
@@ -742,11 +743,13 @@ class AllegroTip(VecTask):
                                                 self.compliance[total_new_detach][tip_in_contact_if_detach].view(-1,3),
                                                 self.friction_mu, 
                                                 cur_tip_norm.view(active_envs,-1,3))
-                if self.debug:
-                    print("Infeasible, detachment:",infeasible_grasps, self.detach_flag, cur_tip_pose, cur_tip_norm)
+                
                 merged_mask = torch.zeros_like(total_new_detach, dtype=torch.bool)
                 merged_mask[total_new_detach] = infeasible_grasps
                 self.detach_flag[merged_mask] = self.detach_flag[merged_mask].fill_(False)
+            self.detach_flag[env_ids] = self.detach_flag[env_ids].fill_(False) # Just resetted environment cannot detach
+            if self.debug:
+                    print("Infeasible, detachment:",infeasible_grasps)
 
             self.actual_target_pose = self.idle_tip_pose.clone() # default pose
             
@@ -754,8 +757,8 @@ class AllegroTip(VecTask):
             # previously detached, currenly undetached
             mask = self.prev_detach_flag * (~self.detach_flag)
             if self.debug:
-                print("Prev and current:",self.prev_detach_flag, self.detach_flag)
-                self.print_state(mask, self.init_poses, self.target_poses)
+                print("Prev and current:",self.prev_detach_flag, self.detach_flag, env_ids)
+                #self.print_state(mask, self.init_poses, self.target_poses)
             self.actual_target_pose[mask] = self.init_poses[mask]
             self.undetached_mask = (~self.prev_detach_flag) * (~self.detach_flag)
             self.compliance[(~self.prev_detach_flag) * self.detach_flag] = 1.0
@@ -782,7 +785,11 @@ class AllegroTip(VecTask):
                                                                        self.target_poses[self.new_detach_mask], 
                                                                        float(substep_id-interp_len)/float(interp_len))
         self.actual_target_pose[self.undetached_mask] = self.prev_target_poses[self.undetached_mask]
-        #self.actual_target_pose[self.undetached_mask] = apply_tf(self.prev_target_poses[self.undetached_mask],object_pose_extended, object_pose_prev_extended)
+        # object_pose_extended = object_pose.repeat(1,self.num_fingers).view(self.num_envs, self.num_fingers, -1)[self.undetached_mask]
+        # object_pose_prev_extended = self.prev_object_pose.repeat(1,self.num_fingers).view(self.num_envs, self.num_fingers, -1)[self.undetached_mask]
+        # self.actual_target_pose[self.undetached_mask] = 0.5 * apply_tf(self.prev_target_poses[self.undetached_mask],
+        #                                                                object_pose_extended, 
+        #                                                                object_pose_prev_extended) + 0.5 * self.prev_target_poses[self.undetached_mask]
         self.cur_targets[:, self.actuated_dof_indices] = scale(self.actual_target_pose.view(self.num_envs, -1),
                                                                self.allegro_hand_dof_lower_limits[self.actuated_dof_indices], 
                                                                self.allegro_hand_dof_upper_limits[self.actuated_dof_indices])
@@ -869,6 +876,7 @@ class AllegroTip(VecTask):
         action_tensor = torch.clamp(actions, -self.clip_actions, self.clip_actions)
         # apply actions # For simplicity use fixed interval always max steps
         # Should place reset in post physics step to prevent asynchronous resetting
+        # TODO: Add preparation steps
         for s in range(self.max_substeps):
             if s == 0:
                 self.pre_physics_step(action_tensor,s)
@@ -1051,10 +1059,10 @@ def randomize_rotation_pen(rand0, rand1, max_angle, x_unit_tensor, y_unit_tensor
 # Should output new pos in world coordinate
 @torch.jit.script
 def apply_tf(vectors, new_pose, prev_pose):
-    rel_pos = quat_rotate(prev_pose[:,3:7], vectors - prev_pose[:,:3])
+    rel_pos = quat_rotate_inverse(prev_pose[:,3:7], vectors - prev_pose[:,:3])
     delta_quat = quat_mul(new_pose[:,3:7], quat_conjugate(prev_pose[:,3:7]))
-    rel_pos_new = quat_rotate(delta_quat, rel_pos)
-    pos_new = quat_rotate_inverse(new_pose[:,3:7], rel_pos_new) + new_pose[:,0:3]
+    rel_pos_new = quat_rotate_inverse(delta_quat, rel_pos)
+    pos_new = quat_rotate(new_pose[:,3:7], rel_pos_new) + new_pose[:,0:3]
     return pos_new
 
 # TODO: May need safe guard this alittle bit

@@ -11,7 +11,7 @@
     <parent link="root"/>
     <child link="aux"/>
     <axis xyz="1 0 0"/>
-    <limit effort="100" velocity="3.0" lower="-0.15" upper="0.15"/>
+    <limit effort="100" velocity="3.0" lower="-0.08" upper="0.08"/>
   </joint>
   <link name="aux">
     <inertial>
@@ -24,7 +24,7 @@
     <parent link="aux"/>
     <child link="aux1"/>
     <axis xyz="0 1 0"/>
-    <limit effort="100" velocity="3.0" lower="-0.15" upper="0.15"/>
+    <limit effort="100" velocity="3.0" lower="-0.08" upper="0.08"/>
   </joint>
   <link name="aux1">
     <inertial>

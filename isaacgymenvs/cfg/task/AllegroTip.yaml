@@ -40,10 +40,10 @@ env:
   forceDecayInterval: 0.08
 
   # reward -> dictionary
-  distRewardScale: -10.0
-  rotRewardScale: 1.0
+  distRewardScale: -5.0
+  rotRewardScale: 10.0
   rotEps: 0.1
-  actionPenaltyScale: -0.0002
+  actionPenaltyScale: -2.0
   reachGoalBonus: 250
   fallDistance: 0.24
   fallPenalty: 0.0
@@ -60,6 +60,7 @@ env:
   frictionMu: 0.5
   objectMeshPath: "urdf/objects/meshes/cube_multicolor.obj"
   contactDistThresh: 0.015
+  preparationStep: 10
 
   asset:
     assetFileName: "urdf/tip.urdf"
@@ -169,7 +170,7 @@ sim:
   substeps: 2
   up_axis: "z"
   use_gpu_pipeline: ${eq:${...pipeline},"gpu"}
-  gravity: [0.0, 0.0, -9.81]
+  gravity: [0.0, 0.0, -3]
   physx:
     num_threads: ${....num_threads}
     solver_type: ${....solver_type}
