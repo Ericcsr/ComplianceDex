@@ -17,8 +17,10 @@ def optimal_transformation_batch(S1, S2, weight):
     weight: [num_envs, num_points]
     """
     weight = weight.unsqueeze(2) # [num_envs, num_points, 1]
-    c1 = (weight * S1).mean(dim=1).unsqueeze(1) # [num_envs, 3]
-    c2 = (weight * S2).mean(dim=1).unsqueeze(1)
+    # c1 = (weight * S1).mean(dim=1).unsqueeze(1) # [num_envs, 3]
+    # c2 = (weight * S2).mean(dim=1).unsqueeze(1)
+    c1 = S1.mean(dim=1).unsqueeze(1)
+    c2 = S2.mean(dim=1).unsqueeze(1)
     H = (weight * (S1 - c1)).transpose(1,2) @ (weight * (S2 - c2))
     U, _, Vh = torch.linalg.svd(H)
     V = Vh.mH
@@ -92,7 +94,7 @@ if __name__ == "__main__":
     A = torch.tensor([[[-0.05, 0.0, 0.03],[0.05,-0.04, 0.03],[0.05,0.0, 0.03],[0.05, 0.04, 0.03]]],requires_grad=True)
     B = torch.tensor([[[-0.03,0., 0.03],[0.03,-0.04, 0.03],[0.03,0., 0.03],[0.03,0.04, 0.03]]])
     N = torch.tensor([[[-1.,0., 0.0],[1.,0., 0.],[1.,0., 0.],[1.,0., 0.]]])
-    w = torch.tensor([[1.,1.,1.,1.]]) # Should be normalzied
+    w = torch.tensor([[1.,1.,1.,1.]]) * 10.0 # Should be normalzied
     R,t = optimal_transformation_batch(A,B,w)
     print(verify(A.squeeze(), B.squeeze(), w.squeeze(), R.squeeze(), t.squeeze()))
 

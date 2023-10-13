@@ -20,8 +20,8 @@ def optimal_transformation_batch(S1, S2, weight):
     weight: [num_envs, num_points]
     """
     weight = weight.unsqueeze(2) # [num_envs, num_points, 1]
-    c1 = (weight * S1).mean(dim=1).unsqueeze(1) # [num_envs, 3]
-    c2 = (weight * S2).mean(dim=1).unsqueeze(1)
+    c1 = S1.mean(dim=1).unsqueeze(1) # [num_envs, 3]
+    c2 = S2.mean(dim=1).unsqueeze(1)
     H = (weight * (S1 - c1)).transpose(1,2) @ (weight * (S2 - c2))
     U, _, Vh = torch.linalg.svd(H)
     V = Vh.mH
@@ -66,6 +66,7 @@ def optimize_reward(tip_pose, target_pose, compliance, opt_mask, friction_mu, ob
     vertices = np.asarray(object_mesh.vertices)
     face_vertices = torch.from_numpy(vertices[triangles.flatten()].reshape(len(triangles),3,3)).cuda().float()
     tip_pose = tip_pose.clone().requires_grad_(True)
+    compliance /= compliance.sum(dim=-1)
     compliance = compliance.clone().requires_grad_(True)
     la = torch.rand(tip_pose.shape[0], device=tip_pose.device).requires_grad_(True) # lambda, slack variable
     opt_la = True
