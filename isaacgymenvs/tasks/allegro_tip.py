@@ -1074,8 +1074,8 @@ def optimal_transformation_batch(S1, S2, weight):
     weight: [num_envs, num_points]
     """
     weight = weight.unsqueeze(2) # [num_envs, num_points, 1]
-    c1 = (weight * S1).mean(dim=1).unsqueeze(1) # [num_envs, num_points]
-    c2 = (weight * S2).mean(dim=1).unsqueeze(1)
+    c1 = S1.mean(dim=1).unsqueeze(1) # [num_envs, num_points]
+    c2 = S2.mean(dim=1).unsqueeze(1)
     H = (weight * (S1 - c1)).transpose(1,2) @ (weight * (S2 - c2))
     U, _, Vh = torch.linalg.svd(H)
     V = Vh.mH

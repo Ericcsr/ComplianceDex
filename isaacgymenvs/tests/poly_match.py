@@ -94,7 +94,7 @@ if __name__ == "__main__":
     A = torch.tensor([[[-0.05, 0.0, 0.03],[0.05,-0.04, 0.03],[0.05,0.0, 0.03],[0.05, 0.04, 0.03]]],requires_grad=True)
     B = torch.tensor([[[-0.03,0., 0.03],[0.03,-0.04, 0.03],[0.03,0., 0.03],[0.03,0.04, 0.03]]])
     N = torch.tensor([[[-1.,0., 0.0],[1.,0., 0.],[1.,0., 0.],[1.,0., 0.]]])
-    w = torch.tensor([[1.,1.,1.,1.]]) * 10.0 # Should be normalzied
+    w = torch.tensor([[90.,40.,1.,75.]]) # Should be normalzied
     R,t = optimal_transformation_batch(A,B,w)
     print(verify(A.squeeze(), B.squeeze(), w.squeeze(), R.squeeze(), t.squeeze()))
 
