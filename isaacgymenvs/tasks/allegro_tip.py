@@ -59,6 +59,7 @@ class AllegroTip(VecTask):
         self.dist_reward_scale = self.cfg["env"]["distRewardScale"]
         self.rot_reward_scale = self.cfg["env"]["rotRewardScale"]
         self.action_penalty_scale = self.cfg["env"]["actionPenaltyScale"]
+        self.target_penalty_scale = self.cfg["env"]["targetPenaltyScale"]
         self.success_tolerance = self.cfg["env"]["successTolerance"]
         self.reach_goal_bonus = self.cfg["env"]["reachGoalBonus"]
         self.fall_dist = self.cfg["env"]["fallDistance"]
@@ -453,8 +454,7 @@ class AllegroTip(VecTask):
         dist, sign, _, _ = compute_sdf(pd_target_local * 10.0, self.face_vertices * 10.0)
         sdist = torch.sqrt(dist)/10.0 * sign
         pd_target_penalty = torch.sum(sdist.view(-1,4), dim=-1) # Encourage PD target stay inside/close to the object
-        action_penalty = compliance_penalty + pd_target_penalty
-        self.rew_buf += action_penalty * self.action_penalty_scale
+        self.rew_buf += compliance_penalty * self.action_penalty_scale + pd_target_penalty * self.target_penalty_scale
 
         self.extras['consecutive_successes'] = self.consecutive_successes.mean()
 

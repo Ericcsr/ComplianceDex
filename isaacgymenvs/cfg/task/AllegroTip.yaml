@@ -41,9 +41,10 @@ env:
 
   # reward -> dictionary
   distRewardScale: -5.0
-  rotRewardScale: 10.0
+  rotRewardScale: 20.0
   rotEps: 0.1
-  actionPenaltyScale: -2.0
+  actionPenaltyScale: -0.05
+  targetPenaltyScale: -2.0
   reachGoalBonus: 250
   fallDistance: 0.24
   fallPenalty: 0.0
