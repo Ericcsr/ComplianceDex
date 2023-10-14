@@ -62,6 +62,7 @@ env:
   objectMeshPath: "urdf/objects/meshes/cube_multicolor.obj"
   contactDistThresh: 0.015
   preparationStep: 10
+  nProjectiveIters: 30
 
   asset:
     assetFileName: "urdf/tip.urdf"

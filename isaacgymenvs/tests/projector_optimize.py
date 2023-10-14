@@ -12,13 +12,14 @@ def optimal_transformation(S1, S2, weight):
     R = V @ U.transpose(0,1)
     t = (weight.diag() @ (S2 - (R @ S1.transpose(0,1)).transpose(0,1))).sum(dim=0) / weight.sum()
     return R,t
-
+#@torch.jit.script
 def optimal_transformation_batch(S1, S2, weight):
     """
     S1: [num_envs, num_points, 3]
     S2: [num_envs, num_points, 3]
     weight: [num_envs, num_points]
     """
+    weight = torch.nn.functional.normalize(weight, dim=1, p=1.0)
     weight = weight.unsqueeze(2) # [num_envs, num_points, 1]
     c1 = S1.mean(dim=1).unsqueeze(1) # [num_envs, 3]
     c2 = S2.mean(dim=1).unsqueeze(1)
@@ -56,48 +57,68 @@ def force_eq_reward(tip_pose, target_pose, compliance, friction_mu, current_norm
     return torch.log(margin+1).sum(dim=-1)
 
 # sensitive to initial condition 
-def optimize_reward(tip_pose, target_pose, compliance, opt_mask, friction_mu, object_mesh, num_iters=30):
+def project_constraint(tip_pose, target_pose, compliance, opt_mask, friction_mu, object_mesh, num_iters=30, requires_grad=True):
     """
+    Params:
+    tip_pose: [num_envs, num_fingers, 3]
+    target_pose: [num_envs, num_fingers, 3]
+    compliance: [num_envs, num_fingers]
     opt_mask: [num_envs, num_fingers]
     """
+    total_opt_mask = opt_mask.sum(dim=-1).bool()
+    num_active_env = total_opt_mask.sum()
+    tip_pose = tip_pose.clone()
+    compliance = compliance.clone()
     triangles = np.asarray(object_mesh.triangles)
     vertices = np.asarray(object_mesh.vertices)
     face_vertices = torch.from_numpy(vertices[triangles.flatten()].reshape(len(triangles),3,3)).cuda().float()
-    var_tip = tip_pose[opt_mask].clone().unsqueeze(dim=1).requires_grad_(True)
-    var_kp = compliance[opt_mask].clone().unsqueeze(dim=1).requires_grad_(True)
+    var_tip = tip_pose[opt_mask].clone().requires_grad_(requires_grad)
+    var_kp = compliance[opt_mask].clone().requires_grad_(requires_grad)
     var_tar = target_pose[opt_mask].unsqueeze(dim=1)
-    rest_tip = tip_pose[~opt_mask].view(tip_pose.shape[0],tip_pose.shape[1]-1,3)
-    rest_kp = compliance[~opt_mask].view(tip_pose.shape[0],tip_pose.shape[1]-1)
-    rest_tar = tip_pose[~opt_mask].view(tip_pose.shape[0],tip_pose.shape[1]-1,3)
-    opt_value = torch.inf * torch.ones(tip_pose.shape[0]).cuda()
+    non_opt_mask = (~opt_mask)
+    non_opt_mask[~total_opt_mask] = False
+    rest_tip = tip_pose[non_opt_mask].view(num_active_env,tip_pose.shape[1]-1,3)
+    rest_kp = compliance[non_opt_mask].view(num_active_env,tip_pose.shape[1]-1)
+    rest_tar = tip_pose[non_opt_mask].view(num_active_env,tip_pose.shape[1]-1,3)
+    opt_value = torch.inf * torch.ones(num_active_env).cuda()
     opt_tip_pose = tip_pose[opt_mask].clone()
     opt_compliance = compliance[opt_mask].clone()
     optim = torch.optim.RMSprop([var_tip, var_kp],lr=0.001)
     for _ in range(num_iters):
         optim.zero_grad()
-        dist,_,current_normal,_ = compute_sdf(torch.cat([rest_tip,var_tip],dim=1).view(-1,3), face_vertices)
-        c = - force_eq_reward(torch.cat([rest_tip,var_tip],dim=1), 
+        all_tip_pose = torch.cat([rest_tip,var_tip.unsqueeze(dim=1)],dim=1).view(-1,3)
+        print(all_tip_pose, var_tip)
+        dist,_,current_normal,_ = compute_sdf(all_tip_pose, face_vertices)
+        c = - force_eq_reward(torch.cat([rest_tip,var_tip.unsqueeze(dim=1)],dim=1), 
                               torch.cat([rest_tar,var_tar],dim=1), 
-                              torch.cat([rest_kp, var_kp],dim=1), friction_mu, current_normal.view(tip_pose.shape))
-        dist = dist.view(tip_pose.shape[0], tip_pose.shape[1])[:,-1]
+                              torch.cat([rest_kp, var_kp.unsqueeze(dim=1)],dim=1), 
+                              friction_mu, current_normal.view(num_active_env, tip_pose.shape[1], tip_pose.shape[2]))
+        dist = dist.view(num_active_env, tip_pose.shape[1])[:,-1]
         l = c + 100 * dist
         l.sum().backward()
         with torch.no_grad():
             update_flag = l < opt_value
-            opt_value[update_flag] = l[update_flag]
-            opt_tip_pose[update_flag] = var_tip[update_flag]
-            opt_compliance[update_flag] = var_kp[update_flag]
+            if update_flag.sum():
+                opt_value[update_flag] = l[update_flag]
+                opt_tip_pose[update_flag] = var_tip[update_flag]
+                opt_compliance[update_flag] = var_kp[update_flag]
         optim.step()
     tip_pose[opt_mask] = var_tip.detach()
     compliance[opt_mask] = var_kp.detach()
     return tip_pose, compliance
 
 if __name__ == "__main__":
+    import time
     box = o3d.geometry.TriangleMesh.create_box(1.0, 1.0, 1.0).translate([-0.5,-0.5,-0.5])
     box.scale(0.1, center=[0,0,0])
-    tip_pose = torch.tensor([[[-0.051, 0.01, -0.04],[0.051,-0.04, 0.03],[0.051,0.0, 0.03],[0.051, 0.04, 0.03]]]).cuda()
-    target_pose = torch.tensor([[[-0.03,0., 0.03],[0.03,-0.04, 0.03],[0.03,0., 0.03],[0.03,0.04, 0.03]]]).cuda()
-    compliance = torch.tensor([[10.,10.,10.,10.]]).cuda()
-    opt_mask = torch.tensor([[True, False, False, False]]).cuda()
+    tip_pose = torch.tensor([[[-0.051, 0.03, -0.04],[0.051,-0.04, 0.03],[0.051,0.0, 0.03],[0.051, 0.04, 0.03]]]*1000).cuda()
+    target_pose = torch.tensor([[[-0.03,0., 0.03],[0.03,-0.04, 0.03],[0.03,0., 0.03],[0.03,0.04, 0.03]]]*1000).cuda()
+    compliance = torch.tensor([[10.,10.,10.,10.]]* 1000).cuda()
+    opt_mask = torch.tensor([[True, False, False, False]]* 1000).cuda()
+    opt_mask[1,0] = False
     friction_mu = 0.2
-    print(optimize_reward(tip_pose, target_pose, compliance, opt_mask, friction_mu, box))
+    ts = time.time()
+    with torch.no_grad():
+        with torch.enable_grad():
+            print(project_constraint(tip_pose, target_pose, compliance, opt_mask, friction_mu, box))
+    print(time.time() - ts)

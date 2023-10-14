@@ -34,7 +34,7 @@ from isaacgym import gymtorch
 from isaacgym import gymapi
 
 from isaacgymenvs.utils.torch_jit_utils import scale, unscale, quat_mul, quat_conjugate, quat_from_angle_axis, \
-    to_torch, torch_rand_float, tensor_clamp, quat_apply, quat_rotate, quat_rotate_inverse
+    to_torch, torch_rand_float, tensor_clamp, quat_apply, quat_rotate, quat_rotate_inverse, linspace
 from isaacgymenvs.tasks.base.vec_task import VecTask
 import open3d as o3d
 from torchsdf import compute_sdf
@@ -104,6 +104,7 @@ class AllegroTip(VecTask):
         self.contact_dist_thresh = self.cfg["env"].get("contactDistThresh", 0.015)
         self.friction_mu = self.cfg["env"].get("frictionMu", 0.5)
         self.preparation_steps = self.cfg["env"].get("preparationStep", 10)
+        self.n_projective_iters = self.cfg["env"].get("nProjectiveIters", 30)
 
         self.object_type = self.cfg["env"]["objectType"]
         assert self.object_type in ["block", "egg", "pen"]
@@ -698,6 +699,7 @@ class AllegroTip(VecTask):
             self.reset_idx(env_ids, goal_env_ids)
 
         object_pose = self.root_state_tensor[self.object_indices, 0:7]
+        offset = 2 * self.num_dofs + self.num_fingers
         # things needed regardless of stage
         # New action start
         # Action: [[init_poses, target_poses, detach_flags, compliances],..] between -1 to 1
@@ -755,11 +757,28 @@ class AllegroTip(VecTask):
             
             
             # previously detached, currenly undetached
-            mask = self.prev_detach_flag * (~self.detach_flag)
+            mask = self.prev_detach_flag * (~self.detach_flag) # [num_envs, num_fingers]
             if self.debug:
                 print("Prev and current:",self.prev_detach_flag, self.detach_flag, env_ids)
                 #self.print_state(mask, self.init_poses, self.target_poses)
-            self.actual_target_pose[mask] = self.init_poses[mask]
+            # Predict contact point based on SDF
+            if mask.sum():
+                contact_poses = self.predict_contact(self.init_poses, self.target_poses, object_pose)
+                # Optimize contact point, compliance and adjust initial pose accordingly
+                compliance_action = scale(self.actions[:, offset:offset+self.num_fingers], self.compliance_lb, self.compliance_ub)
+                with torch.enable_grad():
+                    new_contact_pose, new_compliance = project_constraint(contact_poses, self.target_poses, 
+                                                                    compliance_action, mask,
+                                                                    friction_mu=self.friction_mu,
+                                                                    face_vertices=self.face_vertices,
+                                                                    num_iters=self.n_projective_iters)
+                # Store the compliance back toward actions
+                #self.actions[:,offset:offset+self.num_fingers] = unscale(new_compliance, self.compliance_lb, self.compliance_ub)
+                new_init_pose = self.predict_init(new_contact_pose, self.init_poses, self.target_poses)
+                # TODO: Should target pose get optimized?
+                self.actual_target_pose[mask] = new_init_pose[mask]
+            else:
+                self.actual_target_pose[mask] = self.init_poses[mask]
             self.undetached_mask = (~self.prev_detach_flag) * (~self.detach_flag)
             self.compliance[(~self.prev_detach_flag) * self.detach_flag] = 1.0
             self.target_start = None
@@ -929,9 +948,6 @@ class AllegroTip(VecTask):
         tau = compliance_xyz * (tar_pos - cur_pos) - 0.2 * compliance_xyz * cur_vel
         return tau
 
-    # TODO: Prev contact flag should be result driven
-    # TODO: Need a better contact detection mechanism
-    # TODO: Ideally we should use an SDF to compute shortest distance between tip_pose and object in realtime.
     def detect_detachment(self, tip_poses, object_pose):
         """
         Should check detachment during/after reward calculation
@@ -954,7 +970,6 @@ class AllegroTip(VecTask):
         # mask = (F < self.contact_force_thresh)
         return mask
         
-    # In debug mode assume num_env = 1
     def print_state(self, mask, init_pose, target_pose):
         mask = mask.squeeze()
         init_pose = init_pose.squeeze()
@@ -965,9 +980,6 @@ class AllegroTip(VecTask):
                 print(f"Finger {i} attaching, init: {init_pose[i]}, tar: {target_pose[i]}")
         print("===========================================================")
 
-    # get surface normal in world coordinate
-    # Assume all points are making contact, if not enough fill it in with dummy variables
-    # Should call get_surface before detaching fingers Use sdf
     def get_surface_normal(self, points, object_poses):
         """
         points: [N * 3, 3] , in case of allegro hand 3, 4
@@ -980,6 +992,42 @@ class AllegroTip(VecTask):
         return quat_rotate(object_poses_extend[:,3:7], 
                            normals_local.view(-1,3)).view(object_poses.shape[0], -1, 3)
 
+    def predict_contact(self, init_pose, target_pose, object_pose, steps=50):
+        """
+        Predict one finger contact for each environment
+        Params:
+        init_pose: [num_envs, num_fingers, 3]
+        target_pose: [num_envs, num_fingers, 3]
+        object_pose: [num_envs, 7]
+        Return:
+        contact_points: [num_envs,3]
+        contact_normals: [num_envs,3]
+        """
+        object_pose = object_pose.repeat(1,self.num_fingers).view(-1,7)
+        init_pose = init_pose.view(-1,3)
+        target_pose = target_pose.view(-1,3)
+        local_init = quat_rotate_inverse(object_pose[:,3:7], init_pose - object_pose[:,0:3])
+        local_tar = quat_rotate_inverse(object_pose[:,3:7], target_pose - object_pose[:,0:3])
+        # Create points from local_init to local_tar and query SDF
+        interior_points = linspace(local_init, local_tar, steps).view(-1,3) # [steps, num_envs, 3]
+        dist, sign, normal, _ = compute_sdf(interior_points, self.face_vertices)
+        dist = dist.view(steps, local_init.shape[0]) # [steps, num_envs]
+        mask = (dist < self.contact_dist_thresh ** 2).int()
+        contact_idx = mask.argmax(dim=0)
+        contact_points = interior_points[contact_idx][torch.arange(local_init.shape[0])]
+        return (quat_rotate(object_pose[:,3:7],contact_points)+object_pose[:,0:3]).view(self.num_envs,self.num_fingers, 3)
+
+    def predict_init(self, contact_pose, init_pose, target_pose):
+        """
+        contact_pose: [num_envs, 3]
+        init_pose: [num_envs, 3]
+        target_pose: [num_envs, 3]
+        Return:
+        new_init_pose: [num_envs, 3]
+        """
+        vec_len = torch.norm(init_pose - target_pose,dim=1) # [num_envs]
+        dir_vec = torch.nn.functional.normalize(contact_pose - target_pose,dim=1) # [num_envs, 3]
+        return (vec_len * dir_vec.transpose(0,1)).transpose(0,1)
 
 #####################################################################
 ###=========================jit functions=========================###
@@ -1131,3 +1179,50 @@ def force_eq_check(tip_pose, target_pose, compliance, friction_mu, current_norma
     ang_sim =  torch.einsum("ijk,ijk->ij",dir_vec, normal_eq)
     infeasible_flag = (ang_sim < torch.sqrt(1/(1+torch.tensor(friction_mu)**2)))
     return infeasible_flag.sum(dim=-1).bool()
+
+def project_constraint(tip_pose, target_pose, compliance, opt_mask, friction_mu, face_vertices, num_iters=30):
+    """
+    Params:
+    tip_pose: [num_envs, num_fingers, 3]
+    target_pose: [num_envs, num_fingers, 3]
+    compliance: [num_envs, num_fingers]
+    opt_mask: [num_envs, num_fingers]
+    """
+    total_opt_mask = opt_mask.sum(dim=-1).bool()
+    num_active_env = total_opt_mask.sum()
+    tip_pose = tip_pose.clone()
+    compliance = compliance.clone()
+    var_tip = tip_pose[opt_mask].clone().unsqueeze(dim=1).requires_grad_(True)
+    var_kp = compliance[opt_mask].clone().unsqueeze(dim=1).requires_grad_(True)
+    var_tar = target_pose[opt_mask].unsqueeze(dim=1)
+    non_opt_mask = (~opt_mask)
+    non_opt_mask[~total_opt_mask] = False
+    rest_tip = tip_pose[non_opt_mask].view(num_active_env,tip_pose.shape[1]-1,3)
+    rest_kp = compliance[non_opt_mask].view(num_active_env,tip_pose.shape[1]-1)
+    rest_tar = tip_pose[non_opt_mask].view(num_active_env,tip_pose.shape[1]-1,3)
+    opt_value = torch.inf * torch.ones(num_active_env).cuda()
+    opt_tip_pose = tip_pose[opt_mask].clone()
+    opt_compliance = compliance[opt_mask].clone()
+    optim = torch.optim.RMSprop([var_tip, var_kp],lr=0.001)
+    for _ in range(num_iters):
+        optim.zero_grad()
+        all_tip_pose = torch.cat([rest_tip,var_tip],dim=1)
+        dist,_,current_normal,_ = compute_sdf(all_tip_pose.view(-1,3), 
+                                              face_vertices)
+        c = - force_eq_reward(torch.cat([rest_tip,var_tip],dim=1), 
+                              torch.cat([rest_tar,var_tar],dim=1), 
+                              torch.cat([rest_kp, var_kp],dim=1), 
+                              friction_mu, current_normal.view(num_active_env, tip_pose.shape[1], tip_pose.shape[2]))
+        dist = dist.view(num_active_env, tip_pose.shape[1])[:,-1]
+        l = c + 100 * dist
+        l.sum().backward()
+        with torch.no_grad():
+            update_flag = l < opt_value
+            if update_flag.sum():
+                opt_value[update_flag] = l[update_flag]
+                opt_tip_pose[update_flag] = var_tip.squeeze()[update_flag]
+                opt_compliance[update_flag] = var_kp.squeeze()[update_flag]
+        optim.step()
+    tip_pose[opt_mask] = var_tip.squeeze().detach()
+    compliance[opt_mask] = var_kp.squeeze().detach()
+    return tip_pose, compliance
