@@ -49,7 +49,7 @@
     <collision>
       <origin xyz="0 0 0"/>
       <geometry>
-        <sphere radius="0.01"/>
+        <sphere radius="0.008"/>
       </geometry>
     </collision>
     <inertial>

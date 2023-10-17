@@ -44,7 +44,7 @@ env:
   rotRewardScale: 20.0
   rotEps: 0.1
   actionPenaltyScale: -0.05
-  targetPenaltyScale: -2.0
+  targetPenaltyScale: -10.0
   reachGoalBonus: 250
   fallDistance: 0.24
   fallPenalty: 0.0
@@ -60,7 +60,7 @@ env:
   contactForceThresh: 0.5
   frictionMu: 0.5
   objectMeshPath: "urdf/objects/meshes/cube_multicolor.obj"
-  contactDistThresh: 0.015
+  contactDistThresh: 0.01
   preparationStep: 10
   nProjectiveIters: 30
 

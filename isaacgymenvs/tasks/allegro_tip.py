@@ -29,6 +29,7 @@
 import numpy as np
 import os
 import torch
+import traceback
 
 from isaacgym import gymtorch
 from isaacgym import gymapi
@@ -101,7 +102,7 @@ class AllegroTip(VecTask):
         self.av_factor = self.cfg["env"].get("averFactor", 0.1)
         self.max_substeps = self.cfg["env"].get("maxSubsteps", 100)
         self.contact_force_thresh = self.cfg["env"].get("contactForceThresh", 0.5) # At least 0.5 N force?
-        self.contact_dist_thresh = self.cfg["env"].get("contactDistThresh", 0.015)
+        self.contact_dist_thresh = self.cfg["env"].get("contactDistThresh", 0.01)
         self.friction_mu = self.cfg["env"].get("frictionMu", 0.5)
         self.preparation_steps = self.cfg["env"].get("preparationStep", 10)
         self.n_projective_iters = self.cfg["env"].get("nProjectiveIters", 30)
@@ -128,7 +129,7 @@ class AllegroTip(VecTask):
         triangles = np.asarray(object_mesh.triangles)
         vertices = np.asarray(object_mesh.vertices)
         self.face_vertices = torch.from_numpy(vertices[triangles.flatten()].reshape(len(triangles), 3, 3)).to(sim_device).float()
-        print(self.face_vertices)
+        #print(self.face_vertices)
 
         # can be "full_no_vel", "full", "full_state"
         self.obs_type = self.cfg["env"]["observationType"]
@@ -382,7 +383,7 @@ class AllegroTip(VecTask):
                 default_tip_tf = gymapi.Transform()
                 default_tip_tf.p = gymapi.Vec3(0, 0, 0)
                 default_tip_tf.r = gymapi.Quat(1, 0, 0, 0)
-                allegro_tip_actor = self.gym.create_actor(env_ptr, allegro_tip_asset, default_tip_tf, f"tip:{fid}", group=i, filter=0)
+                allegro_tip_actor = self.gym.create_actor(env_ptr, allegro_tip_asset, default_tip_tf, f"tip:{fid}", group=i, filter=fid)
                 hand_state = [allegro_tip_start_pose.p.x, allegro_tip_start_pose.p.y, allegro_tip_start_pose.p.z,
                               allegro_tip_start_pose.r.x, allegro_tip_start_pose.r.y, allegro_tip_start_pose.r.z, allegro_tip_start_pose.r.w,
                               0, 0, 0, 0, 0, 0]
@@ -749,15 +750,16 @@ class AllegroTip(VecTask):
                 merged_mask = torch.zeros_like(total_new_detach, dtype=torch.bool)
                 merged_mask[total_new_detach] = infeasible_grasps
                 self.detach_flag[merged_mask] = self.detach_flag[merged_mask].fill_(False)
-            self.detach_flag[env_ids] = self.detach_flag[env_ids].fill_(False) # Just resetted environment cannot detach
-            if self.debug:
+                if self.debug:
                     print("Infeasible, detachment:",infeasible_grasps)
-
+            self.detach_flag[env_ids] = self.detach_flag[env_ids].fill_(False) # Just resetted environment cannot detach
             self.actual_target_pose = self.idle_tip_pose.clone() # default pose
             
             
             # previously detached, currenly undetached
             mask = self.prev_detach_flag * (~self.detach_flag) # [num_envs, num_fingers]
+            invalid_mask = mask.sum(dim=1) > 1
+            mask[invalid_mask] = mask[invalid_mask].fill_(False)
             if self.debug:
                 print("Prev and current:",self.prev_detach_flag, self.detach_flag, env_ids)
                 #self.print_state(mask, self.init_poses, self.target_poses)
@@ -773,9 +775,14 @@ class AllegroTip(VecTask):
                                                                     face_vertices=self.face_vertices,
                                                                     num_iters=self.n_projective_iters)
                 # Store the compliance back toward actions
-                #self.actions[:,offset:offset+self.num_fingers] = unscale(new_compliance, self.compliance_lb, self.compliance_ub)
+                
                 new_init_pose = self.predict_init(new_contact_pose, self.init_poses, self.target_poses)
+                nan_mask = torch.isnan(new_init_pose).any(dim=2)
+                if nan_mask.any():
+                    print("Warning NaN detected")
+                    new_init_pose[nan_mask] = self.init_poses[nan_mask]
                 # TODO: Should target pose get optimized?
+                self.actions[:,offset:offset+self.num_fingers] = unscale(new_compliance, self.compliance_lb, self.compliance_ub)
                 self.actual_target_pose[mask] = new_init_pose[mask]
             else:
                 self.actual_target_pose[mask] = self.init_poses[mask]
@@ -804,11 +811,11 @@ class AllegroTip(VecTask):
                                                                        self.target_poses[self.new_detach_mask], 
                                                                        float(substep_id-interp_len)/float(interp_len))
         self.actual_target_pose[self.undetached_mask] = self.prev_target_poses[self.undetached_mask]
-        # object_pose_extended = object_pose.repeat(1,self.num_fingers).view(self.num_envs, self.num_fingers, -1)[self.undetached_mask]
-        # object_pose_prev_extended = self.prev_object_pose.repeat(1,self.num_fingers).view(self.num_envs, self.num_fingers, -1)[self.undetached_mask]
-        # self.actual_target_pose[self.undetached_mask] = 0.5 * apply_tf(self.prev_target_poses[self.undetached_mask],
-        #                                                                object_pose_extended, 
-        #                                                                object_pose_prev_extended) + 0.5 * self.prev_target_poses[self.undetached_mask]
+        object_pose_extended = object_pose.repeat(1,self.num_fingers).view(self.num_envs, self.num_fingers, -1)[self.undetached_mask]
+        object_pose_prev_extended = self.prev_object_pose.repeat(1,self.num_fingers).view(self.num_envs, self.num_fingers, -1)[self.undetached_mask]
+        self.actual_target_pose[self.undetached_mask] = 0.5 * apply_tf(self.prev_target_poses[self.undetached_mask],
+                                                                       object_pose_extended, 
+                                                                       object_pose_prev_extended) + 0.5 * self.prev_target_poses[self.undetached_mask]
         self.cur_targets[:, self.actuated_dof_indices] = scale(self.actual_target_pose.view(self.num_envs, -1),
                                                                self.allegro_hand_dof_lower_limits[self.actuated_dof_indices], 
                                                                self.allegro_hand_dof_upper_limits[self.actuated_dof_indices])
@@ -1019,15 +1026,15 @@ class AllegroTip(VecTask):
 
     def predict_init(self, contact_pose, init_pose, target_pose):
         """
-        contact_pose: [num_envs, 3]
-        init_pose: [num_envs, 3]
-        target_pose: [num_envs, 3]
+        contact_pose: [num_envs, num_fingers, 3]
+        init_pose: [num_envs, num_fingers,3]
+        target_pose: [num_envs, num_fingers, 3]
         Return:
-        new_init_pose: [num_envs, 3]
+        new_init_pose: [num_envs, num_fingers,3]
         """
-        vec_len = torch.norm(init_pose - target_pose,dim=1) # [num_envs]
-        dir_vec = torch.nn.functional.normalize(contact_pose - target_pose,dim=1) # [num_envs, 3]
-        return (vec_len * dir_vec.transpose(0,1)).transpose(0,1)
+        vec_len = torch.norm(init_pose - target_pose,dim=2).unsqueeze(dim=2) # [num_envs, num_fingers]
+        dir_vec = torch.nn.functional.normalize(contact_pose - target_pose,dim=2) # [num_envs, num_fingers, 3]
+        return vec_len * dir_vec
 
 #####################################################################
 ###=========================jit functions=========================###
@@ -1125,7 +1132,7 @@ def optimal_transformation_batch(S1, S2, weight):
     c1 = S1.mean(dim=1).unsqueeze(1) # [num_envs, num_points]
     c2 = S2.mean(dim=1).unsqueeze(1)
     H = (weight * (S1 - c1)).transpose(1,2) @ (weight * (S2 - c2))
-    U, _, Vh = torch.linalg.svd(H)
+    U, _, Vh = torch.linalg.svd(H + 1e-6*torch.rand_like(H))
     V = Vh.mH
     R = V @ U.transpose(1,2)
     t = (weight * (S2 - (R@S1.transpose(1,2)).transpose(1,2))).sum(dim=1) / weight.sum(dim=1)
@@ -1187,6 +1194,9 @@ def project_constraint(tip_pose, target_pose, compliance, opt_mask, friction_mu,
     target_pose: [num_envs, num_fingers, 3]
     compliance: [num_envs, num_fingers]
     opt_mask: [num_envs, num_fingers]
+    Return:
+    new_tip_pose: [num_envs, num_fingers, 3]
+    compliance: [num_envs, num_fingers]
     """
     total_opt_mask = opt_mask.sum(dim=-1).bool()
     num_active_env = total_opt_mask.sum()
@@ -1197,6 +1207,7 @@ def project_constraint(tip_pose, target_pose, compliance, opt_mask, friction_mu,
     var_tar = target_pose[opt_mask].unsqueeze(dim=1)
     non_opt_mask = (~opt_mask)
     non_opt_mask[~total_opt_mask] = False
+    #print(tip_pose[non_opt_mask].shape, non_opt_mask)
     rest_tip = tip_pose[non_opt_mask].view(num_active_env,tip_pose.shape[1]-1,3)
     rest_kp = compliance[non_opt_mask].view(num_active_env,tip_pose.shape[1]-1)
     rest_tar = tip_pose[non_opt_mask].view(num_active_env,tip_pose.shape[1]-1,3)
@@ -1209,19 +1220,24 @@ def project_constraint(tip_pose, target_pose, compliance, opt_mask, friction_mu,
         all_tip_pose = torch.cat([rest_tip,var_tip],dim=1)
         dist,_,current_normal,_ = compute_sdf(all_tip_pose.view(-1,3), 
                                               face_vertices)
-        c = - force_eq_reward(torch.cat([rest_tip,var_tip],dim=1), 
-                              torch.cat([rest_tar,var_tar],dim=1), 
-                              torch.cat([rest_kp, var_kp],dim=1), 
-                              friction_mu, current_normal.view(num_active_env, tip_pose.shape[1], tip_pose.shape[2]))
+        try:
+            c = - force_eq_reward(torch.cat([rest_tip,var_tip],dim=1), 
+                                  torch.cat([rest_tar,var_tar],dim=1), 
+                                  torch.cat([rest_kp, var_kp],dim=1), 
+                                  friction_mu, current_normal.view(num_active_env, tip_pose.shape[1], tip_pose.shape[2]))
+        except:
+            traceback.print_exc()
+            print("Error happend:",var_tip, var_kp)
         dist = dist.view(num_active_env, tip_pose.shape[1])[:,-1]
         l = c + 100 * dist
         l.sum().backward()
         with torch.no_grad():
             update_flag = l < opt_value
             if update_flag.sum():
+                #print(update_flag.shape,opt_tip_pose.shape, var_tip.shape)
                 opt_value[update_flag] = l[update_flag]
-                opt_tip_pose[update_flag] = var_tip.squeeze()[update_flag]
-                opt_compliance[update_flag] = var_kp.squeeze()[update_flag]
+                opt_tip_pose[update_flag] = var_tip.squeeze(dim=1)[update_flag]
+                opt_compliance[update_flag] = var_kp.squeeze(dim=1)[update_flag]
         optim.step()
     tip_pose[opt_mask] = var_tip.squeeze().detach()
     compliance[opt_mask] = var_kp.squeeze().detach()
