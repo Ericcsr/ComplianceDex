@@ -41,8 +41,8 @@ import open3d as o3d
 from torchsdf import compute_sdf
 
 # TODO: remove it once actual tip pose is available
-TIP_POSES = [[-0.0375,0.0, 0.0325], [0.0375, -0.03, 0.0325], [0.0375, 0.0, 0.0325], [0.0375, 0.03, 0.0325]]
-TAR_POSES = [[-0.02,0.0, 0.0325], [0.02, -0.03, 0.0325], [0.02, 0.0, 0.0325], [0.02, 0.03, 0.0325]]
+TIP_POSES = [[-0.0375,0.0, 0.0325], [0.0, -0.0375, 0.0325], [0.0, 0.0375, 0.0325], [0.0375, 0.0, 0.0325]]
+TAR_POSES = [[-0.02,0.0, 0.0325], [0.0, -0.02, 0.0325], [0.0, 0.02, 0.0325], [0.02, 0.0, 0.0325]]
 TIP_Z_OFFSET = 0.1
 DEFAULT_COMPLIANCE = 50.0
 IDLE_POSES = [[-0.15, 0.15, 0.15], [0.15, -0.15, 0.15], [0.15, 0.0, 0.15], [0.15, 0.15, 0.15]]
@@ -100,7 +100,7 @@ class AllegroTip(VecTask):
         self.print_success_stat = self.cfg["env"]["printNumSuccesses"]
         self.max_consecutive_successes = self.cfg["env"]["maxConsecutiveSuccesses"]
         self.av_factor = self.cfg["env"].get("averFactor", 0.1)
-        self.max_substeps = self.cfg["env"].get("maxSubsteps", 100)
+        self.max_substeps = self.cfg["env"].get("maxSubsteps", 50)
         self.contact_force_thresh = self.cfg["env"].get("contactForceThresh", 0.5) # At least 0.5 N force?
         self.contact_dist_thresh = self.cfg["env"].get("contactDistThresh", 0.01)
         self.friction_mu = self.cfg["env"].get("frictionMu", 0.5)
@@ -233,6 +233,15 @@ class AllegroTip(VecTask):
 
         self.rb_forces = torch.zeros((self.num_envs, self.num_bodies, 3), dtype=torch.float, device=self.device)
         self.prev_detach_flag = torch.zeros((self.num_envs, self.num_fingers), dtype=torch.bool, device = self.device)
+
+        # Data structure for storing trajectories
+        self.exp_name = self.cfg["expName"]
+        self.tips_positions = np.zeros((1200, self.num_envs, self.num_fingers, 3), dtype=np.float32)
+        self.target_positions = np.zeros((1200, self.num_envs, self.num_fingers, 3), dtype=np.float32)
+        self.object_posrots = np.zeros((1200, self.num_envs, 7), dtype=np.float32)
+        self.goal_posrots = np.zeros((1200, self.num_envs, 7), dtype=np.float32)
+        self.compliance_coeffs = np.zeros((1200, self.num_envs, self.num_fingers), dtype=np.float32)
+        self.step_cnt = 0
 
     def create_sim(self):
         self.dt = self.sim_params.dt
@@ -400,7 +409,7 @@ class AllegroTip(VecTask):
             # add object
             object_handle = self.gym.create_actor(env_ptr, object_asset, object_start_pose, "object", i, 0, 0)
             shape_props = self.gym.get_actor_rigid_shape_properties(env_ptr, object_handle)
-            shape_props[0].friction = 0.5
+            shape_props[0].friction = self.friction_mu
             shape_props[0].rolling_friction = 0.5
             shape_props[0].torsion_friction = 0.5
             self.gym.set_actor_rigid_shape_properties(env_ptr, object_handle, shape_props)
@@ -806,16 +815,17 @@ class AllegroTip(VecTask):
 
         # Previously undetached target_pose currently undetached # Should always moving
         if self.target_start is not None:
-            interp_len = self.max_substeps//2
+            interp_len = int(0.8 * self.max_substeps)
+            offset = int(0.2 * self.max_substeps)
             self.actual_target_pose[self.new_detach_mask] = torch.lerp(self.target_start, 
                                                                        self.target_poses[self.new_detach_mask], 
-                                                                       float(substep_id-interp_len)/float(interp_len))
+                                                                       float(substep_id-offset)/float(interp_len))
         self.actual_target_pose[self.undetached_mask] = self.prev_target_poses[self.undetached_mask]
         object_pose_extended = object_pose.repeat(1,self.num_fingers).view(self.num_envs, self.num_fingers, -1)[self.undetached_mask]
         object_pose_prev_extended = self.prev_object_pose.repeat(1,self.num_fingers).view(self.num_envs, self.num_fingers, -1)[self.undetached_mask]
-        self.actual_target_pose[self.undetached_mask] = 0.5 * apply_tf(self.prev_target_poses[self.undetached_mask],
+        self.actual_target_pose[self.undetached_mask] = 0.3 * apply_tf(self.prev_target_poses[self.undetached_mask],
                                                                        object_pose_extended, 
-                                                                       object_pose_prev_extended) + 0.5 * self.prev_target_poses[self.undetached_mask]
+                                                                       object_pose_prev_extended) + 0.7 * self.prev_target_poses[self.undetached_mask]
         self.cur_targets[:, self.actuated_dof_indices] = scale(self.actual_target_pose.view(self.num_envs, -1),
                                                                self.allegro_hand_dof_lower_limits[self.actuated_dof_indices], 
                                                                self.allegro_hand_dof_upper_limits[self.actuated_dof_indices])
@@ -855,35 +865,49 @@ class AllegroTip(VecTask):
         self.substep_cnt += 1
 
         self.compute_observations()
-        if self.substep_cnt % self.max_substeps == self.max_substeps / 2 and self.substep_cnt != 0:
+        if self.substep_cnt % self.max_substeps == self.max_substeps * 0.2 and self.substep_cnt != 0:
             self.update_action = True
         if get_reward: # the action would be obsolete
             self.compute_reward(self.actions)
             self.substep_cnt = 0
 
-        if self.viewer and self.debug_viz:
-            # draw axes on target object
-            self.gym.clear_lines(self.viewer)
-            self.gym.refresh_rigid_body_state_tensor(self.sim)
+        if self.debug_viz:
+            if self.step_cnt < 1200:
+                self.tips_positions[self.step_cnt] = self.allegro_hand_dof_pos.view(self.num_envs, self.num_fingers, 3).cpu().numpy()
+                self.object_posrots[self.step_cnt] = self.object_pose.cpu().numpy()
+                self.target_positions[self.step_cnt] = self.actual_target_pose.view(self.num_envs, self.num_fingers, 3).cpu().numpy()
+                self.compliance_coeffs[self.step_cnt] = self.compliance.cpu().numpy()
+                self.goal_posrots[self.step_cnt] = self.goal_pose
+            if self.step_cnt == 1200:
+                np.save(f"data/tips_traj/{self.exp_name}.npy", self.tips_positions)
+                np.save(f"data/obj_traj/{self.exp_name}.npy", self.object_posrots)
+                np.save(f"data/goal_traj/{self.exp_name}.npy", self.goal_posrots)
+                np.save(f"data/target_traj/{self.exp_name}.npy", self.target_positions)
+                np.save(f"data/compliance_traj/{self.exp_name}.npy", self.compliance_coeffs)
+            self.step_cnt += 1
 
-            for i in range(self.num_envs):
-                targetx = (self.goal_pos[i] + quat_apply(self.goal_rot[i], to_torch([1, 0, 0], device=self.device) * 0.2)).cpu().numpy()
-                targety = (self.goal_pos[i] + quat_apply(self.goal_rot[i], to_torch([0, 1, 0], device=self.device) * 0.2)).cpu().numpy()
-                targetz = (self.goal_pos[i] + quat_apply(self.goal_rot[i], to_torch([0, 0, 1], device=self.device) * 0.2)).cpu().numpy()
+            # # draw axes on target object
+            # self.gym.clear_lines(self.viewer)
+            # self.gym.refresh_rigid_body_state_tensor(self.sim)
 
-                p0 = self.goal_pos[i].cpu().numpy() + self.goal_displacement_tensor.cpu().numpy()
-                self.gym.add_lines(self.viewer, self.envs[i], 1, [p0[0], p0[1], p0[2], targetx[0], targetx[1], targetx[2]], [0.85, 0.1, 0.1])
-                self.gym.add_lines(self.viewer, self.envs[i], 1, [p0[0], p0[1], p0[2], targety[0], targety[1], targety[2]], [0.1, 0.85, 0.1])
-                self.gym.add_lines(self.viewer, self.envs[i], 1, [p0[0], p0[1], p0[2], targetz[0], targetz[1], targetz[2]], [0.1, 0.1, 0.85])
+            # for i in range(self.num_envs):
+            #     targetx = (self.goal_pos[i] + quat_apply(self.goal_rot[i], to_torch([1, 0, 0], device=self.device) * 0.2)).cpu().numpy()
+            #     targety = (self.goal_pos[i] + quat_apply(self.goal_rot[i], to_torch([0, 1, 0], device=self.device) * 0.2)).cpu().numpy()
+            #     targetz = (self.goal_pos[i] + quat_apply(self.goal_rot[i], to_torch([0, 0, 1], device=self.device) * 0.2)).cpu().numpy()
 
-                objectx = (self.object_pos[i] + quat_apply(self.object_rot[i], to_torch([1, 0, 0], device=self.device) * 0.2)).cpu().numpy()
-                objecty = (self.object_pos[i] + quat_apply(self.object_rot[i], to_torch([0, 1, 0], device=self.device) * 0.2)).cpu().numpy()
-                objectz = (self.object_pos[i] + quat_apply(self.object_rot[i], to_torch([0, 0, 1], device=self.device) * 0.2)).cpu().numpy()
+            #     p0 = self.goal_pos[i].cpu().numpy() + self.goal_displacement_tensor.cpu().numpy()
+            #     self.gym.add_lines(self.viewer, self.envs[i], 1, [p0[0], p0[1], p0[2], targetx[0], targetx[1], targetx[2]], [0.85, 0.1, 0.1])
+            #     self.gym.add_lines(self.viewer, self.envs[i], 1, [p0[0], p0[1], p0[2], targety[0], targety[1], targety[2]], [0.1, 0.85, 0.1])
+            #     self.gym.add_lines(self.viewer, self.envs[i], 1, [p0[0], p0[1], p0[2], targetz[0], targetz[1], targetz[2]], [0.1, 0.1, 0.85])
 
-                p0 = self.object_pos[i].cpu().numpy()
-                self.gym.add_lines(self.viewer, self.envs[i], 1, [p0[0], p0[1], p0[2], objectx[0], objectx[1], objectx[2]], [0.85, 0.1, 0.1])
-                self.gym.add_lines(self.viewer, self.envs[i], 1, [p0[0], p0[1], p0[2], objecty[0], objecty[1], objecty[2]], [0.1, 0.85, 0.1])
-                self.gym.add_lines(self.viewer, self.envs[i], 1, [p0[0], p0[1], p0[2], objectz[0], objectz[1], objectz[2]], [0.1, 0.1, 0.85])
+            #     objectx = (self.object_pos[i] + quat_apply(self.object_rot[i], to_torch([1, 0, 0], device=self.device) * 0.2)).cpu().numpy()
+            #     objecty = (self.object_pos[i] + quat_apply(self.object_rot[i], to_torch([0, 1, 0], device=self.device) * 0.2)).cpu().numpy()
+            #     objectz = (self.object_pos[i] + quat_apply(self.object_rot[i], to_torch([0, 0, 1], device=self.device) * 0.2)).cpu().numpy()
+
+            #     p0 = self.object_pos[i].cpu().numpy()
+            #     self.gym.add_lines(self.viewer, self.envs[i], 1, [p0[0], p0[1], p0[2], objectx[0], objectx[1], objectx[2]], [0.85, 0.1, 0.1])
+            #     self.gym.add_lines(self.viewer, self.envs[i], 1, [p0[0], p0[1], p0[2], objecty[0], objecty[1], objecty[2]], [0.1, 0.85, 0.1])
+            #     self.gym.add_lines(self.viewer, self.envs[i], 1, [p0[0], p0[1], p0[2], objectz[0], objectz[1], objectz[2]], [0.1, 0.1, 0.85])
     # Redefine stepping here
     def step(self, actions: torch.Tensor):
         """Step the physics of the environment.
@@ -1138,7 +1162,6 @@ def optimal_transformation_batch(S1, S2, weight):
     return R, t
 
 # Assume friction is uniform
-# Differentiable
 def force_eq_reward(tip_pose, target_pose, compliance, friction_mu, current_normal):
     """
     Params:
@@ -1151,15 +1174,17 @@ def force_eq_reward(tip_pose, target_pose, compliance, friction_mu, current_norm
     Returns:
     reward: [num_envs]
     """
-    R,t = optimal_transformation_batch(tip_pose, target_pose, compliance) # t: [num_envs, 3]
+    R,t = optimal_transformation_batch(tip_pose, target_pose, compliance)
+    # tip position at equilirium
     tip_pose_eq = (R@tip_pose.transpose(1,2)).transpose(1,2) + t.unsqueeze(1)
-    diff_vec = tip_pose_eq - target_pose # [num_envs, num_fingers, 3]
+    diff_vec = tip_pose_eq - target_pose
     dir_vec = diff_vec / diff_vec.norm(dim=2).unsqueeze(2)
-    # Rotate local norm to final
+    # Rotate local norm to equilibrium pose
     normal_eq = (R @ current_normal.transpose(1,2)).transpose(1,2)
-    # measure cos between
+    # measure cos similarity between force direction and surface normal
     ang_diff =  torch.einsum("ijk,ijk->ij",dir_vec, normal_eq)
-    margin = (ang_diff - torch.sqrt(1/(1+torch.tensor(friction_mu)**2))).clamp(min=-0.99)
+    cos_mu = torch.sqrt(1/(1+torch.tensor(friction_mu)**2))
+    margin = (ang_diff - cos_mu).clamp(min=-0.99)
     # we hope margin to be as large as possible, never below zero
     return torch.log(margin+1).sum(dim=1)
 
@@ -1209,11 +1234,12 @@ def project_constraint(tip_pose, target_pose, compliance, opt_mask, friction_mu,
     #print(tip_pose[non_opt_mask].shape, non_opt_mask)
     rest_tip = tip_pose[non_opt_mask].view(num_active_env,tip_pose.shape[1]-1,3)
     rest_kp = compliance[non_opt_mask].view(num_active_env,tip_pose.shape[1]-1)
-    rest_tar = tip_pose[non_opt_mask].view(num_active_env,tip_pose.shape[1]-1,3)
+    rest_tar = target_pose[non_opt_mask].view(num_active_env,tip_pose.shape[1]-1,3)
     opt_value = torch.inf * torch.ones(num_active_env).cuda()
     opt_tip_pose = tip_pose[opt_mask].clone()
     opt_compliance = compliance[opt_mask].clone()
-    optim = torch.optim.RMSprop([var_tip, var_kp],lr=0.001)
+    optim = torch.optim.RMSprop([{"params":var_tip, "lr":0.001},
+                                 {"params":var_kp, "lr":0.1}])
     for _ in range(num_iters):
         optim.zero_grad()
         all_tip_pose = torch.cat([rest_tip,var_tip],dim=1)
@@ -1228,7 +1254,7 @@ def project_constraint(tip_pose, target_pose, compliance, opt_mask, friction_mu,
             traceback.print_exc()
             print("Error happend:",var_tip, var_kp)
         dist = dist.view(num_active_env, tip_pose.shape[1])[:,-1]
-        l = c + 100 * dist
+        l = c + 10000 * dist
         l.sum().backward()
         with torch.no_grad():
             update_flag = l < opt_value

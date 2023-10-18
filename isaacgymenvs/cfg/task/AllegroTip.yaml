@@ -1,5 +1,6 @@
 # used to create the object
 name: AllegroTip
+expName: "TestIt"
 
 physics_engine: ${..physics_engine}
 

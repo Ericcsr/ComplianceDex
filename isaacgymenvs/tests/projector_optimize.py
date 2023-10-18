@@ -53,11 +53,12 @@ def force_eq_reward(tip_pose, target_pose, compliance, friction_mu, current_norm
     # measure cos between
     ang_diff =  torch.einsum("ijk,ijk->ij",dir_vec, normal_eq)
     margin = (ang_diff - torch.sqrt(1/(1+torch.tensor(friction_mu)**2))).clamp(min=-0.99)
+    print("Margin:",margin)
     # we hope margin to be as large as possible, never below zero
     return torch.log(margin+1).sum(dim=-1)
 
 # sensitive to initial condition 
-def project_constraint(tip_pose, target_pose, compliance, opt_mask, friction_mu, object_mesh, num_iters=30, requires_grad=True):
+def project_constraint(tip_pose, target_pose, compliance, opt_mask, friction_mu, object_mesh, num_iters=100, requires_grad=True):
     """
     Params:
     tip_pose: [num_envs, num_fingers, 3]
@@ -72,6 +73,9 @@ def project_constraint(tip_pose, target_pose, compliance, opt_mask, friction_mu,
     triangles = np.asarray(object_mesh.triangles)
     vertices = np.asarray(object_mesh.vertices)
     face_vertices = torch.from_numpy(vertices[triangles.flatten()].reshape(len(triangles),3,3)).cuda().float()
+    object_mesh.scale(0.95, center=[0,0,0])
+    vertices = np.asarray(object_mesh.vertices)
+    face_vertices_deflate = torch.from_numpy(vertices[triangles.flatten()].reshape(len(triangles),3,3)).cuda().float()
     var_tip = tip_pose[opt_mask].clone().requires_grad_(requires_grad)
     var_kp = compliance[opt_mask].clone().requires_grad_(requires_grad)
     var_tar = target_pose[opt_mask].unsqueeze(dim=1)
@@ -79,22 +83,24 @@ def project_constraint(tip_pose, target_pose, compliance, opt_mask, friction_mu,
     non_opt_mask[~total_opt_mask] = False
     rest_tip = tip_pose[non_opt_mask].view(num_active_env,tip_pose.shape[1]-1,3)
     rest_kp = compliance[non_opt_mask].view(num_active_env,tip_pose.shape[1]-1)
-    rest_tar = tip_pose[non_opt_mask].view(num_active_env,tip_pose.shape[1]-1,3)
+    rest_tar = target_pose[non_opt_mask].view(num_active_env,tip_pose.shape[1]-1,3)
     opt_value = torch.inf * torch.ones(num_active_env).cuda()
     opt_tip_pose = tip_pose[opt_mask].clone()
     opt_compliance = compliance[opt_mask].clone()
-    optim = torch.optim.RMSprop([var_tip, var_kp],lr=0.001)
+    optim = torch.optim.RMSprop([{"params":var_tip, "lr":1e-3}, 
+                                 {"params":var_kp, "lr":0.1}])
     for _ in range(num_iters):
         optim.zero_grad()
         all_tip_pose = torch.cat([rest_tip,var_tip.unsqueeze(dim=1)],dim=1).view(-1,3)
-        print(all_tip_pose, var_tip)
-        dist,_,current_normal,_ = compute_sdf(all_tip_pose, face_vertices)
+        
+        _,_,current_normal,_ = compute_sdf(all_tip_pose, face_vertices_deflate)
+        dist,_,_,_ = compute_sdf(all_tip_pose, face_vertices)
         c = - force_eq_reward(torch.cat([rest_tip,var_tip.unsqueeze(dim=1)],dim=1), 
                               torch.cat([rest_tar,var_tar],dim=1), 
                               torch.cat([rest_kp, var_kp.unsqueeze(dim=1)],dim=1), 
                               friction_mu, current_normal.view(num_active_env, tip_pose.shape[1], tip_pose.shape[2]))
         dist = dist.view(num_active_env, tip_pose.shape[1])[:,-1]
-        l = c + 100 * dist
+        l = c + 10000 * dist
         l.sum().backward()
         with torch.no_grad():
             update_flag = l < opt_value
@@ -111,11 +117,10 @@ if __name__ == "__main__":
     import time
     box = o3d.geometry.TriangleMesh.create_box(1.0, 1.0, 1.0).translate([-0.5,-0.5,-0.5])
     box.scale(0.1, center=[0,0,0])
-    tip_pose = torch.tensor([[[-0.051, 0.03, -0.04],[0.051,-0.04, 0.03],[0.051,0.0, 0.03],[0.051, 0.04, 0.03]]]*1000).cuda()
-    target_pose = torch.tensor([[[-0.03,0., 0.03],[0.03,-0.04, 0.03],[0.03,0., 0.03],[0.03,0.04, 0.03]]]*1000).cuda()
-    compliance = torch.tensor([[10.,10.,10.,10.]]* 1000).cuda()
-    opt_mask = torch.tensor([[True, False, False, False]]* 1000).cuda()
-    opt_mask[1,0] = False
+    tip_pose = torch.tensor([[[-0.051, 0., 0.03],[0.03,-0.051, 0.03],[0.03, 0.051, 0.03]]]).cuda()
+    target_pose = torch.tensor([[[-0.0,0., 0.03],[0.03,-0.03, 0.03],[0.03,0.03, 0.03]]]).cuda()
+    compliance = torch.tensor([[20.,3.,3.]]).cuda()
+    opt_mask = torch.tensor([[True, False, False]]).cuda()
     friction_mu = 0.2
     ts = time.time()
     with torch.no_grad():

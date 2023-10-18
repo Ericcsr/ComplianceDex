@@ -17,9 +17,7 @@
       </geometry>
     </collision>
     <inertial>
-      <!-- <density value="400.0"/> -->
-      <mass value="0.5"/>
-      <inertia ixx="1e-4" ixy="0" ixz="0" iyy="1e-4" iyz="0" izz="1e-4"/>
+      <density value="400.0"/>
     </inertial>
   </link>
 </robot>
