@@ -1,6 +1,6 @@
 # used to create the object
 name: AllegroTip
-expName: "TestIt"
+expName: "NewConfig"
 
 physics_engine: ${..physics_engine}
 
@@ -9,7 +9,7 @@ env:
   numEnvs: ${resolve_default:16384,${...num_envs}}
   envSpacing: 0.75
   episodeLength: 600
-  enableDebugVis: False
+  enableDebugVis: True
   aggregateMode: 1
 
   clipObservations: 5.0

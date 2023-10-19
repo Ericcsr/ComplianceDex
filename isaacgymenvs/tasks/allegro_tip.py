@@ -727,6 +727,10 @@ class AllegroTip(VecTask):
             self.target_poses = scale(self.actions[:,self.num_dofs:2*self.num_dofs], 
                             self.allegro_hand_dof_lower_limits[self.actuated_dof_indices],
                             self.allegro_hand_dof_upper_limits[self.actuated_dof_indices]).view(-1, self.num_fingers, 3)
+            print("Lower Limits:",self.allegro_hand_dof_lower_limits)
+            print("Upper Limits:",self.allegro_hand_dof_upper_limits)
+            print("init pose:", self.init_poses)
+            print("target pose:", self.target_poses)
             total_prev_detach = self.prev_detach_flag.sum(dim=-1).bool() # whether there are detached fingers previously [num_envs,]
             # If total_prev_detach, current must all attach
             # If not total_prev_detach, current can have at most one detach
@@ -821,18 +825,19 @@ class AllegroTip(VecTask):
                                                                        self.target_poses[self.new_detach_mask], 
                                                                        float(substep_id-offset)/float(interp_len))
         self.actual_target_pose[self.undetached_mask] = self.prev_target_poses[self.undetached_mask]
-        object_pose_extended = object_pose.repeat(1,self.num_fingers).view(self.num_envs, self.num_fingers, -1)[self.undetached_mask]
-        object_pose_prev_extended = self.prev_object_pose.repeat(1,self.num_fingers).view(self.num_envs, self.num_fingers, -1)[self.undetached_mask]
-        self.actual_target_pose[self.undetached_mask] = 0.3 * apply_tf(self.prev_target_poses[self.undetached_mask],
-                                                                       object_pose_extended, 
-                                                                       object_pose_prev_extended) + 0.7 * self.prev_target_poses[self.undetached_mask]
+        # object_pose_extended = object_pose.repeat(1,self.num_fingers).view(self.num_envs, self.num_fingers, -1)[self.undetached_mask]
+        # object_pose_prev_extended = self.prev_object_pose.repeat(1,self.num_fingers).view(self.num_envs, self.num_fingers, -1)[self.undetached_mask]
+        # self.actual_target_pose[self.undetached_mask] = 0.5 * apply_tf(self.prev_target_poses[self.undetached_mask],
+        #                                                                object_pose_extended, 
+        #                                                                object_pose_prev_extended) + 0.5 * self.prev_target_poses[self.undetached_mask]
         self.cur_targets[:, self.actuated_dof_indices] = scale(self.actual_target_pose.view(self.num_envs, -1),
                                                                self.allegro_hand_dof_lower_limits[self.actuated_dof_indices], 
                                                                self.allegro_hand_dof_upper_limits[self.actuated_dof_indices])
         self.prev_target_poses = self.actual_target_pose # Should be initialized as current target pose
         #self.prev_detach_flag = self.detach_flag 
         self.prev_object_pose = object_pose
-        
+        if actions is not None:
+            print("actual target pose:", self.actual_target_pose)
         # Should use force control instead of position control
         tau = self.compute_torque(self.allegro_hand_dof_pos, 
                                   self.allegro_hand_dof_vel, 
@@ -877,7 +882,7 @@ class AllegroTip(VecTask):
                 self.object_posrots[self.step_cnt] = self.object_pose.cpu().numpy()
                 self.target_positions[self.step_cnt] = self.actual_target_pose.view(self.num_envs, self.num_fingers, 3).cpu().numpy()
                 self.compliance_coeffs[self.step_cnt] = self.compliance.cpu().numpy()
-                self.goal_posrots[self.step_cnt] = self.goal_pose
+                self.goal_posrots[self.step_cnt] = self.goal_pose.cpu().numpy()
             if self.step_cnt == 1200:
                 np.save(f"data/tips_traj/{self.exp_name}.npy", self.tips_positions)
                 np.save(f"data/obj_traj/{self.exp_name}.npy", self.object_posrots)
@@ -1058,7 +1063,9 @@ class AllegroTip(VecTask):
         """
         vec_len = torch.norm(init_pose - target_pose,dim=2).unsqueeze(dim=2) # [num_envs, num_fingers]
         dir_vec = torch.nn.functional.normalize(contact_pose - target_pose,dim=2) # [num_envs, num_fingers, 3]
-        return vec_len * dir_vec
+        init_pose = (0.7 * vec_len * dir_vec).view(-1,self.num_fingers * 3).clamp(min=self.allegro_hand_dof_lower_limits, 
+                                                                                  max=self.allegro_hand_dof_upper_limits)
+        return init_pose.view(-1, self.num_fingers, 3)
 
 #####################################################################
 ###=========================jit functions=========================###
@@ -1211,7 +1218,7 @@ def force_eq_check(tip_pose, target_pose, compliance, friction_mu, current_norma
     infeasible_flag = (ang_sim < torch.sqrt(1/(1+torch.tensor(friction_mu)**2)))
     return infeasible_flag.sum(dim=-1).bool()
 
-def project_constraint(tip_pose, target_pose, compliance, opt_mask, friction_mu, face_vertices, num_iters=30):
+def project_constraint(tip_pose, target_pose, compliance, opt_mask, friction_mu, face_vertices, num_iters=40):
     """
     Params:
     tip_pose: [num_envs, num_fingers, 3]
@@ -1243,8 +1250,11 @@ def project_constraint(tip_pose, target_pose, compliance, opt_mask, friction_mu,
     for _ in range(num_iters):
         optim.zero_grad()
         all_tip_pose = torch.cat([rest_tip,var_tip],dim=1)
-        dist,_,current_normal,_ = compute_sdf(all_tip_pose.view(-1,3), 
+        dist,_,_,_ = compute_sdf(all_tip_pose.view(-1,3), 
                                               face_vertices)
+        _,_,current_normal,_ = compute_sdf(all_tip_pose.view(-1,3), 
+                                              face_vertices * 0.95)
+        
         try:
             c = - force_eq_reward(torch.cat([rest_tip,var_tip],dim=1), 
                                   torch.cat([rest_tar,var_tar],dim=1), 

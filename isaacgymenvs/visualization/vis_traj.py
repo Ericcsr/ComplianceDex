@@ -5,7 +5,7 @@ from argparse import ArgumentParser
 
 from rigidBodySento import create_primitive_shape
 
-NUM_TIPS = 3
+NUM_TIPS = 4
 
 def load_data(exp_name, env_id):
     tips_traj = np.load(f"../data/tips_traj/{exp_name}.npy")[:,env_id]
@@ -28,7 +28,7 @@ if __name__ == "__main__":
     parser.add_argument("--exp_name", type=str, required=True)
     parser.add_argument("--env_id", type=int, default=0)
     args = parser.parse_args()
-    #tips_traj, obj_traj, target_traj, compliance_traj, goal_traj = load_data(args.exp_name, args.env_id)
+    tips_traj, obj_traj, target_traj, compliance_traj, goal_traj = load_data(args.exp_name, args.env_id)
     c = pb.connect(pb.GUI)
 
     tips_id = []
@@ -47,22 +47,23 @@ if __name__ == "__main__":
     g_id = pb.loadURDF("../../assets/urdf/objects/cube_visualization.urdf")
 
 
-    # tip_pos = np.array([[-0.051, 0.03, -0.04],[0.051,-0.04, 0.03],[0.051,0.0, 0.03],[0.051, 0.04, 0.03]])
-    # tip_pos_new = np.array([[-5.0021e-02,  9.9771e-09,  2.8942e-02],
-    #                         [ 5.1000e-02, -4.0000e-02,  3.0000e-02],
-    #                         [ 5.1000e-02,  0.0000e+00,  3.0000e-02],
-    #                         [ 5.1000e-02,  4.0000e-02,  3.0000e-02]])
-    # tar_pos = np.array([[-0.03,0., 0.03],[0.03,-0.04, 0.03],[0.03,0., 0.03],[0.03,0.04, 0.03]])
-    tip_pos = np.array([[-0.051, 0., 0.03],[0.03,-0.051, 0.03],[0.03, 0.051, 0.03]])
-    tar_pos = np.array([[-0.0,0., 0.03],[0.03,-0.03, 0.03],[0.03,0.03, 0.03]])
+    # # tip_pos = np.array([[-0.051, 0.03, -0.04],[0.051,-0.04, 0.03],[0.051,0.0, 0.03],[0.051, 0.04, 0.03]])
+    # # tip_pos_new = np.array([[-5.0021e-02,  9.9771e-09,  2.8942e-02],
+    # #                         [ 5.1000e-02, -4.0000e-02,  3.0000e-02],
+    # #                         [ 5.1000e-02,  0.0000e+00,  3.0000e-02],
+    # #                         [ 5.1000e-02,  4.0000e-02,  3.0000e-02]])
+    # # tar_pos = np.array([[-0.03,0., 0.03],[0.03,-0.04, 0.03],[0.03,0., 0.03],[0.03,0.04, 0.03]])
+    # tip_pos = np.array([[-0.051, 0., 0.03],[0.03,-0.051, 0.03],[0.03, 0.051, 0.03]])
+    # tar_pos = np.array([[-0.0,0., 0.03],[0.03,-0.03, 0.03],[0.03,0.03, 0.03]])
 
-    set_tip_pos(tars_id, tar_pos)
-    set_tip_pos(tips_id, tip_pos)
-    while True:
-        pass
-    # for i in range(len(tips_traj)):
-    #     set_tip_pos(tips_id, tips_traj[i])
-    #     set_tip_pos(tars_id, target_traj[i])
-    #     set_object_pos(o_id, obj_traj[i])
-    #     set_object_pos(g_id, goal_traj[i])
-    #     time.sleep(0.05)
+    # set_tip_pos(tars_id, tar_pos)
+    # set_tip_pos(tips_id, tip_pos)
+    # while True:
+    #     pass
+    input("Enter to continue")
+    for i in range(len(tips_traj)):
+        set_tip_pos(tips_id, tips_traj[i])
+        set_tip_pos(tars_id, target_traj[i])
+        set_object_pos(o_id, obj_traj[i])
+        set_object_pos(g_id, goal_traj[i])
+        time.sleep(0.05)
