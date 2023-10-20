@@ -46,6 +46,8 @@ TAR_POSES = [[-0.02,0.0, 0.0325], [0.0, -0.02, 0.0325], [0.0, 0.02, 0.0325], [0.
 TIP_Z_OFFSET = 0.1
 DEFAULT_COMPLIANCE = 50.0
 IDLE_POSES = [[-0.15, 0.15, 0.15], [0.15, -0.15, 0.15], [0.15, 0.0, 0.15], [0.15, 0.15, 0.15]]
+TIPS_LO_LIMIT = [-0.08,-0.06,0.0, 0.0, -0.08, 0.0, 0.0, -0.03, 0.0, 0.0, 0.03, 0.0]
+TIPS_UP_LIMIT = [0.01, 0.06, 0.2, 0.08, -0.03, 0.2, 0.08, 0.03, 0.2, 0.08, 0.08, 0.2]
 
 class AllegroTip(VecTask):
 
@@ -313,13 +315,15 @@ class AllegroTip(VecTask):
             allegro_tip_dof_props['armature'][i] = 0.001
 
         # limits and default pos for allegro hand
-        self.allegro_hand_dof_lower_limits = self.allegro_tip_dof_lower_limits * self.num_fingers
-        self.allegro_hand_dof_upper_limits = self.allegro_tip_dof_upper_limits * self.num_fingers
+        #self.allegro_hand_dof_lower_limits = self.allegro_tip_dof_lower_limits * self.num_fingers
+        #self.allegro_hand_dof_upper_limits = self.allegro_tip_dof_upper_limits * self.num_fingers
+        self.allegro_hand_dof_upper_limits = TIPS_UP_LIMIT
+        self.allegro_hand_dof_lower_limits = TIPS_LO_LIMIT
         self.allegro_hand_dof_default_pos = self.allegro_tip_dof_default_pos * self.num_fingers
         self.allegro_hand_dof_default_vel = self.allegro_tip_dof_default_vel* self.num_fingers
 
         # limits for compliance
-        self.compliance_lb = torch.ones(self.num_fingers, device=self.device) * 10.0
+        self.compliance_lb = torch.ones(self.num_fingers, device=self.device) * 3.0
         self.compliance_ub = torch.ones(self.num_fingers, device=self.device) * 100.0
 
         self.actuated_dof_indices = to_torch(self.actuated_dof_indices, dtype=torch.long, device=self.device)
@@ -727,10 +731,6 @@ class AllegroTip(VecTask):
             self.target_poses = scale(self.actions[:,self.num_dofs:2*self.num_dofs], 
                             self.allegro_hand_dof_lower_limits[self.actuated_dof_indices],
                             self.allegro_hand_dof_upper_limits[self.actuated_dof_indices]).view(-1, self.num_fingers, 3)
-            print("Lower Limits:",self.allegro_hand_dof_lower_limits)
-            print("Upper Limits:",self.allegro_hand_dof_upper_limits)
-            print("init pose:", self.init_poses)
-            print("target pose:", self.target_poses)
             total_prev_detach = self.prev_detach_flag.sum(dim=-1).bool() # whether there are detached fingers previously [num_envs,]
             # If total_prev_detach, current must all attach
             # If not total_prev_detach, current can have at most one detach
@@ -772,7 +772,7 @@ class AllegroTip(VecTask):
             # previously detached, currenly undetached
             mask = self.prev_detach_flag * (~self.detach_flag) # [num_envs, num_fingers]
             invalid_mask = mask.sum(dim=1) > 1
-            mask[invalid_mask] = mask[invalid_mask].fill_(False)
+            mask[invalid_mask] = mask[invalid_mask].fill_(False) # Invalid mask will fall down anyway
             if self.debug:
                 print("Prev and current:",self.prev_detach_flag, self.detach_flag, env_ids)
                 #self.print_state(mask, self.init_poses, self.target_poses)
@@ -799,8 +799,9 @@ class AllegroTip(VecTask):
                 self.actual_target_pose[mask] = new_init_pose[mask]
             else:
                 self.actual_target_pose[mask] = self.init_poses[mask]
+            self.compliance[mask] = 3.0 # When moving to initial location do it gently
             self.undetached_mask = (~self.prev_detach_flag) * (~self.detach_flag)
-            self.compliance[(~self.prev_detach_flag) * self.detach_flag] = 1.0
+            self.compliance[(~self.prev_detach_flag) * self.detach_flag] = 3.0
             self.target_start = None
             
         elif self.update_action: # INSTANT: Action execution, assume self.action unchanged
@@ -824,20 +825,19 @@ class AllegroTip(VecTask):
             self.actual_target_pose[self.new_detach_mask] = torch.lerp(self.target_start, 
                                                                        self.target_poses[self.new_detach_mask], 
                                                                        float(substep_id-offset)/float(interp_len))
-        self.actual_target_pose[self.undetached_mask] = self.prev_target_poses[self.undetached_mask]
-        # object_pose_extended = object_pose.repeat(1,self.num_fingers).view(self.num_envs, self.num_fingers, -1)[self.undetached_mask]
-        # object_pose_prev_extended = self.prev_object_pose.repeat(1,self.num_fingers).view(self.num_envs, self.num_fingers, -1)[self.undetached_mask]
-        # self.actual_target_pose[self.undetached_mask] = 0.5 * apply_tf(self.prev_target_poses[self.undetached_mask],
-        #                                                                object_pose_extended, 
-        #                                                                object_pose_prev_extended) + 0.5 * self.prev_target_poses[self.undetached_mask]
+        #self.actual_target_pose[self.undetached_mask] = self.prev_target_poses[self.undetached_mask]
+        object_pose_extended = object_pose.repeat(1,self.num_fingers).view(self.num_envs, self.num_fingers, -1)[self.undetached_mask]
+        object_pose_prev_extended = self.prev_object_pose.repeat(1,self.num_fingers).view(self.num_envs, self.num_fingers, -1)[self.undetached_mask]
+        self.actual_target_pose[self.undetached_mask] = 0.5 * apply_tf(self.prev_target_poses[self.undetached_mask],
+                                                                       object_pose_extended, 
+                                                                       object_pose_prev_extended) + 0.5 * self.prev_target_poses[self.undetached_mask]
         self.cur_targets[:, self.actuated_dof_indices] = scale(self.actual_target_pose.view(self.num_envs, -1),
                                                                self.allegro_hand_dof_lower_limits[self.actuated_dof_indices], 
                                                                self.allegro_hand_dof_upper_limits[self.actuated_dof_indices])
         self.prev_target_poses = self.actual_target_pose # Should be initialized as current target pose
-        #self.prev_detach_flag = self.detach_flag 
         self.prev_object_pose = object_pose
-        if actions is not None:
-            print("actual target pose:", self.actual_target_pose)
+        # if actions is not None:
+        #     print("actual target pose:", self.actual_target_pose)
         # Should use force control instead of position control
         tau = self.compute_torque(self.allegro_hand_dof_pos, 
                                   self.allegro_hand_dof_vel, 

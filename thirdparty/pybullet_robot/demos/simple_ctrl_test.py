@@ -1,7 +1,7 @@
 import numpy as np
 import pybullet as pb
 from pybullet_robot.worlds import SimpleWorld, add_PyB_models_to_path
-from pybullet_robot.robots import PandaArm, AllegroHand
+from pybullet_robot.robots import AllegroHand
 from pybullet_robot.controllers import OSImpedanceController
 import time
 
