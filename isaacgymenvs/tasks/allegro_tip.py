@@ -108,6 +108,7 @@ class AllegroTip(VecTask):
         self.friction_mu = self.cfg["env"].get("frictionMu", 0.5)
         self.preparation_steps = self.cfg["env"].get("preparationStep", 10)
         self.n_projective_iters = self.cfg["env"].get("nProjectiveIters", 30)
+        self.update_weight = self.cfg["env"].get("updateWeight", [0.7, 0.7, 0.5])
 
         self.object_type = self.cfg["env"]["objectType"]
         assert self.object_type in ["block", "egg", "pen"]
@@ -235,7 +236,7 @@ class AllegroTip(VecTask):
 
         self.rb_forces = torch.zeros((self.num_envs, self.num_bodies, 3), dtype=torch.float, device=self.device)
         self.prev_detach_flag = torch.zeros((self.num_envs, self.num_fingers), dtype=torch.bool, device = self.device)
-
+        self.update_weight = to_torch(self.update_weight, dtype=torch.float, device=self.device)
         # Data structure for storing trajectories
         self.exp_name = self.cfg["expName"]
         self.tips_positions = np.zeros((1200, self.num_envs, self.num_fingers, 3), dtype=np.float32)
@@ -791,12 +792,12 @@ class AllegroTip(VecTask):
                 
                 new_init_pose = self.predict_init(new_contact_pose, self.init_poses, self.target_poses)
                 nan_mask = torch.isnan(new_init_pose).any(dim=2)
-                if nan_mask.any():
+                if not nan_mask.any():
+                    self.actions[:,offset:offset+self.num_fingers] = unscale(new_compliance, self.compliance_lb, self.compliance_ub)
+                    self.actual_target_pose[mask] = new_init_pose[mask]
+                else:
                     print("Warning NaN detected")
-                    new_init_pose[nan_mask] = self.init_poses[nan_mask]
-                # TODO: Should target pose get optimized?
-                self.actions[:,offset:offset+self.num_fingers] = unscale(new_compliance, self.compliance_lb, self.compliance_ub)
-                self.actual_target_pose[mask] = new_init_pose[mask]
+                    self.actual_target_pose[mask] = self.init_poses[mask]
             else:
                 self.actual_target_pose[mask] = self.init_poses[mask]
             self.compliance[mask] = 3.0 # When moving to initial location do it gently
@@ -828,9 +829,8 @@ class AllegroTip(VecTask):
         #self.actual_target_pose[self.undetached_mask] = self.prev_target_poses[self.undetached_mask]
         object_pose_extended = object_pose.repeat(1,self.num_fingers).view(self.num_envs, self.num_fingers, -1)[self.undetached_mask]
         object_pose_prev_extended = self.prev_object_pose.repeat(1,self.num_fingers).view(self.num_envs, self.num_fingers, -1)[self.undetached_mask]
-        self.actual_target_pose[self.undetached_mask] = 0.5 * apply_tf(self.prev_target_poses[self.undetached_mask],
-                                                                       object_pose_extended, 
-                                                                       object_pose_prev_extended) + 0.5 * self.prev_target_poses[self.undetached_mask]
+        tf_target_pose = apply_tf(self.prev_target_poses[self.undetached_mask], object_pose_extended, object_pose_prev_extended)
+        self.actual_target_pose[self.undetached_mask] = self.update_weight * tf_target_pose + (1-self.update_weight) * self.prev_target_poses[self.undetached_mask]
         self.cur_targets[:, self.actuated_dof_indices] = scale(self.actual_target_pose.view(self.num_envs, -1),
                                                                self.allegro_hand_dof_lower_limits[self.actuated_dof_indices], 
                                                                self.allegro_hand_dof_upper_limits[self.actuated_dof_indices])

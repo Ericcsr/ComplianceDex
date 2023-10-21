@@ -9,7 +9,7 @@ env:
   numEnvs: ${resolve_default:16384,${...num_envs}}
   envSpacing: 0.75
   episodeLength: 600
-  enableDebugVis: True
+  enableDebugVis: False
   aggregateMode: 1
 
   clipObservations: 5.0
@@ -64,6 +64,7 @@ env:
   contactDistThresh: 0.01
   preparationStep: 10
   nProjectiveIters: 30
+  updateWeight: [0.7, 0.7, 0.5]
 
   asset:
     assetFileName: "urdf/tip.urdf"
