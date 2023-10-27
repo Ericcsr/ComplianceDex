@@ -1,6 +1,6 @@
 # used to create the object
 name: AllegroTip
-expName: "NewConfig"
+expName: "Debug"
 
 physics_engine: ${..physics_engine}
 
@@ -9,7 +9,7 @@ env:
   numEnvs: ${resolve_default:16384,${...num_envs}}
   envSpacing: 0.75
   episodeLength: 600
-  enableDebugVis: False
+  enableDebugVis: True
   aggregateMode: 1
 
   clipObservations: 5.0
@@ -59,12 +59,13 @@ env:
   numFingers: 4
   maxSubsteps: 100
   contactForceThresh: 0.5
-  frictionMu: 0.5
+  frictionMu: 1.0
   objectMeshPath: "urdf/objects/meshes/cube_multicolor.obj"
   contactDistThresh: 0.01
   preparationStep: 10
   nProjectiveIters: 30
-  updateWeight: [0.7, 0.7, 0.5]
+  updateWeight: [0.8, 0.8, 0.0]
+  deltaScale: 0.1
 
   asset:
     assetFileName: "urdf/tip.urdf"
@@ -174,7 +175,7 @@ sim:
   substeps: 2
   up_axis: "z"
   use_gpu_pipeline: ${eq:${...pipeline},"gpu"}
-  gravity: [0.0, 0.0, -3]
+  gravity: [0.0, 0.0, -3.0]
   physx:
     num_threads: ${....num_threads}
     solver_type: ${....solver_type}
