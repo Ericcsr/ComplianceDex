@@ -294,7 +294,7 @@ void unbatched_triangle_distance_forward_cuda_impl(
         dist_sign.data_ptr<int32_t>(),
         reinterpret_cast<vector_t*>(normals.data_ptr<scalar_t>()),
         reinterpret_cast<vector_t*>(clst_points.data_ptr<scalar_t>()));
-    CUDA_CHECK(cudaGetLastError());
+    //CUDA_CHECK(cudaGetLastError());
   });
 }
 
@@ -318,7 +318,7 @@ void unbatched_triangle_distance_backward_cuda_impl(
         reinterpret_cast<vector_t*>(clst_points.data_ptr<scalar_t>()),
         points.size(0),
         reinterpret_cast<vector_t*>(grad_points.data_ptr<scalar_t>()));
-    CUDA_CHECK(cudaGetLastError());
+    //CUDA_CHECK(cudaGetLastError());
   });
 }
 

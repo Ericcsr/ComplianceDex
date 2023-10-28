@@ -36,7 +36,7 @@ if __name__ == "__main__":
     robot = LeapHand(pb)
 
     add_PyB_models_to_path()
-    pb.setTimeStep(0.0005)
+    pb.setTimeStep(0.001)
     plane = pb.loadURDF('plane.urdf', basePosition=[0, 0, -0.5])
     # table = pb.loadURDF('table/table.urdf',
     #                     useFixedBase=True, globalScaling=0.5)
@@ -57,7 +57,7 @@ if __name__ == "__main__":
 
     world = SimpleWorld(robot, objects)
 
-    slow_rate = 2000.
+    slow_rate = 1000.
 
     init_pos, goal_ori = world.robot.ee_pose()
     
@@ -68,15 +68,14 @@ if __name__ == "__main__":
 
     z_traj = np.linspace(init_pos, goal_pos, 2000)
 
+    input("Press Enter to continue...")
     controller.start_controller_thread()
 
     i = 0
-
     while True:
         now = time.time()
 
         ee_pos, _ = world.robot.ee_pose()
-        print(ee_pos)
         wrench = world.robot.get_ee_wrench(local=False)
         
         if i < len(z_traj):

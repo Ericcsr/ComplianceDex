@@ -74,6 +74,7 @@ class TipValidator:
         self.set_object_pose(object_pose)
         self.setCompliance(kP, kD)
         self._pb.setGravity(0,0,-1.0)
+        input("Press Enter to continue...")
         for i in range(max_steps):
             if i == 400:
                 self._pb.setGravity(0.0, 0.0, -3.0)
@@ -99,7 +100,7 @@ class LeapHandValidator:
     def set_tip_pose(self, tip_pose):
         joint_pose, flag = self.robot.inverse_kinematics(tip_pose)
         if flag is not None:
-            self.robot.set_joint_angles(joint_pose)
+            self.controller.update_goal(tip_pose)
         else:
             print("Failed to move the joint, IK not feasible")
 
@@ -129,8 +130,8 @@ class LeapHandValidator:
         self.set_object_pose(object_pose)
         self.setCompliance(kP, kD)
         self.robot.configure_default_pos([-0.02,0.035, 0.09], [0, 0, 0, 1])
-        self.set_tip_pose(tip_pose)
-        #self.controller.start_controller_thread()
+        #self.set_tip_pose(tip_pose)
+        input("Press Enter to continue...")
         for i in range(max_steps):
             if i == 800:
                 self._pb.setGravity(0.0, 0.0, -3.0)
@@ -160,8 +161,8 @@ if __name__ == "__main__":
     kp = np.array([[50.0,50.0,50.0],
                    [50.0,50.0,50.0],
                    [50.0,50.0,50.0],
-                   [50.0,50.0,50.0]]) * 0.2
-    kd = np.sqrt(kp)
+                   [50.0,50.0,50.0]]) * 1.5
+    kd = np.sqrt(kp) * 0.6
     validator.execute_grasp(finger_pose,target_pose,[0,0,0,0,0,0,1],kp,kd)
 
 

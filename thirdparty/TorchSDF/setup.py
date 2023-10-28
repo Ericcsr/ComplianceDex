@@ -14,7 +14,7 @@ import subprocess
 import warnings
 
 TORCH_MIN_VER = '1.5.0'
-TORCH_MAX_VER = '1.12.2'
+TORCH_MAX_VER = '2.2.0'
 
 # Module required before installation
 # trying to install it ahead turned out to be too unstable.
