@@ -202,13 +202,16 @@ class GraspOptimizer:
         """
         raise NotImplementedError
 
-    def get_spherical_grad(self, contact_configs_grad, contact_configs, target_pose):
+    # TODO: Check mathematical correctness
+    def get_spherical_grad(self, contact_configs_grad, contact_configs, target_pose, thetas, phis):
         """
         convert contact_configuration grads to grads in spherical coordiantes,
         weight different gradient component using likelihood value of each samples.
         :params: contact_configs_grad: [num_samples, num_fingers, 3]
         :params: contact_configs: [num_samples, num_fingers, 3]
         :params: target_pose: [num_samples, 3]
+        :params: thetas: rotation along y axis [num_fingers]
+        :params: phis: rotation along z axis [num_fingers]
         :return: thetas_grad [num_fingers]
         :return: phis_grad [num_fingers]
         """
@@ -229,8 +232,14 @@ class GraspOptimizer:
         
         normal_grad = (cartesian_grad * nr).sum(dim=2) * nr
         orthonormal_grad = cartesian_grad - normal_grad
-        # need decomposition for theta and phi. Mind the sign.
-        thetas_grad
+        # need decomposition for theta and phi.
+        basis_theta = torch.vstack([-torch.sin(thetas)*torch.cos(phis),
+                                -torch.sin(thetas)*torch.sin(phis),
+                                -torch.cos(thetas)]).T
+        basis_phi = torch.vstack([-torch.sin(phis), torch.cos(phis), torch.zeros_like(phis)]).T
+        thetas_grad = (orthonormal_grad * basis_theta).sum(dim=1)
+        phis_grad = (orthonormal_grad * basis_phi).sum(dim=1)
+        return thetas_grad, phis_grad
 
 
 
@@ -277,10 +286,10 @@ class GraspOptimizer:
         :return: compliance: [num_fingers]
         """
         compliance = compliance.clone()
+        thetas, phis, rs = self.get_spherical_mapping(init_pose, target_pose)
         optimizer = torch.optim.RMSprop([{"params":thetas, "lr":self.lr[0]},
                                          {"params":phis, "lr":self.lr[0]},
                                          {"params":compliance, "lr":self.lr[1]}])
-        thetas, phis, rs = self.get_spherical_mapping(init_pose, target_pose)
         contact_configs = self.sample_contacts(thetas, phis, rs)
         contact_q = self.solve_ik(contact_configs)
         for i in range(self.num_iters):
@@ -293,7 +302,11 @@ class GraspOptimizer:
             delta_q = self.get_jacobian_pinv(contact_q).T @ delta_sample_pose # need batchify
             collision_flag = self.check_collision(contact_q + delta_q) # [num_samples]
             contact_configs.grad[collision_flag] = 0.0
-            thetas.grad, phis.grad = self.get_spherical_grad(contact_configs.grad, target_pose)
+            thetas.grad, phis.grad = self.get_spherical_grad(contact_configs.grad, 
+                                                             contact_configs,
+                                                             target_pose,
+                                                             thetas,
+                                                             phis)
             optimizer.step()
         new_init_pose = self.get_cartesian_mapping(thetas, phis, rs)
         return new_init_pose, target_pose, compliance
