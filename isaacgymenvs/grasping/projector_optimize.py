@@ -108,7 +108,7 @@ def project_constraint_sdf(tip_pose, target_pose, compliance, opt_mask, friction
     compliance[opt_mask] = var_kp.detach()
     return tip_pose, compliance
 
-def project_constraint_gpis(tip_pose, target_pose, compliance, opt_mask, friction_mu, gpis, num_iters=10):
+def optimize_grasp_gpis(tip_pose, target_pose, compliance, opt_mask, friction_mu, gpis, num_iters=10):
     total_opt_mask = opt_mask.sum(dim=-1).bool()
     num_active_env = total_opt_mask.sum()
     tip_pose = tip_pose.clone()
@@ -136,7 +136,8 @@ def project_constraint_gpis(tip_pose, target_pose, compliance, opt_mask, frictio
                               torch.cat([rest_kp, var_kp.unsqueeze(dim=1)],dim=1), 
                               friction_mu, current_normal.view(num_active_env, tip_pose.shape[1], tip_pose.shape[2]))
         dist = dist.view(num_active_env, tip_pose.shape[1])[:,-1]
-        l = c + 10000 * dist**2
+        # Should add cost term for variance
+        l = c + 10000 * dist**2 + var * 10
         l.sum().backward()
         with torch.no_grad():
             update_flag = l < opt_value
@@ -148,6 +149,126 @@ def project_constraint_gpis(tip_pose, target_pose, compliance, opt_mask, frictio
     tip_pose[opt_mask] = var_tip.detach()
     compliance[opt_mask] = var_kp.detach()
     return tip_pose, compliance
+
+class GraspOptimizer:
+    def __init__(self, num_iters, hand_model, object_gpis, num_samples=5, lr=[1e-3, 0.1], isf_barrier=10000, var_cost=10):
+        self.num_iters = num_iters
+        self.isf_barrier = isf_barrier
+        self.var_cost = var_cost
+        self.lr = lr
+        self.hand_model = hand_model
+        self.object_gpis = object_gpis
+        self.num_samples = num_samples
+        self.samples_p = np.linspace(0,1.0, self.num_samples)
+
+    def check_collision(self,q, hand_base=None):
+        """
+        check self collision, use default hand base pose if hand_base = None
+        :params: q: hand joint angle [num_dofs]
+        :params: hand_base: base position respect to the object frame [7]
+        :return: collision_flag: whether there are collision
+        """
+        raise NotImplementedError
+
+    def get_spherical_mapping(self, init_pose, target_pose):
+        """
+        :params: init_pose: initial tip pose [num_fingers, 3]
+        :params: target_pose: target tip pose [num_fingers, 3]
+        :return: thetas: rotation along y axis [num_fingers]
+        :return: phis: rotation along z axis [num_fingers]
+        :return: rs: distance between init and target [num_fingers]
+        """
+        raise NotImplementedError
+
+    def sample_contacts(self, thetas, phis, rs):
+        """
+        sample contact configurations between initial and target positions
+        :params: thetas: rotation along y axis [num_fingers]
+        :params: phis: rotation along z axis [num_fingers]
+        :params: rs: distance between init and target [num_fingers]
+        :return: contact_configs: [num_samples, num_fingers, 3]
+        """
+        raise NotImplementedError
+
+    def compute_cost_grad(self, contact_configs, target_pose, compliance, friction_mu):
+        """
+        compute gradient of all contact configs w.r.t. cost
+        :params: contact_configs: [num_samples, num_fingers, 3]
+        :params: target_pose: [num_fingers, 3]
+        :params: compliance: [num_fingers]
+        :friction_mu: float
+        :return: contact_configs_grad [num_samples, num_fingers, 3]
+        :return: compliance_grad [num_fingers] 
+        """
+        raise NotImplementedError
+
+    def get_spherical_grad(self, contact_configs_grad, contact_configs, target_pose):
+        """
+        convert contact_configuration grads to grads in spherical coordiantes,
+        weight different gradient component using likelihood value of each samples.
+        :params: contact_configs_grad: [num_samples, num_fingers, 3]
+        :params: contact_configs: [num_samples, num_fingers, 3]
+        :params: target_pose: [num_samples, 3]
+        :return: thetas_grad [num_fingers]
+        :return: phis_grad [num_fingers]
+        """
+        raise NotImplementedError
+
+    def get_cartesian_mapping(self, thetas, phis, rs, target_pose, p=[1.0]):
+        """
+        map spherical coordinate back to cartesian coordinate
+        :params: thetas: [num_fingers]
+        :params: phis: [num_fingers]
+        :params: rs: [num_fingers]
+        :params: target_pose: [num_fingers, 3]
+        :params: p: list, fractional indexing parameter target_pose + rs * p
+        :return: new_init_pose: [num_fingers, 3]
+        """
+        raise NotImplementedError
+
+    # Should consider kinematic constraints, cannot guarantee a grasp is reachible, but gurantee no kinematic constraint violation
+    def optimize_grasp(self, init_pose, target_pose, compliance, friction_mu):
+        """
+        Optimize grasp with kinematic constraints
+        :params: init_pose: [num_fingers, 3]
+        :params: target_pose: [num_fingers, 3]
+        :params: compliance: [num_fingers]
+        :params: friction_mu: float
+        :return: new_init_pose: [num_fingers, 3]
+        :return: new_target_pose: [num_fingers, 3]
+        :return: compliance: [num_fingers]
+        """
+        compliance = compliance.clone()
+        optimizer = torch.optim.RMSprop([{"params":thetas, "lr":self.lr[0]},
+                                         {"params":phis, "lr":self.lr[0]},
+                                         {"params":compliance, "lr":self.lr[1]}])
+        thetas, phis, rs = self.get_spherical_mapping(init_pose, target_pose)
+        contact_configs = self.sample_contacts(thetas, phis, rs)
+        contact_q = self.solve_ik(contact_configs)
+        for i in range(num_iters):
+            contact_configs.grad, compliance.grad = self.compute_cost_grad(contact_configs, 
+                                                                           target_pose, 
+                                                                           compliance, 
+                                                                           friction_mu)
+            # Check collision and update
+            delta_sample_pose = self.lr[0] * contact_configs.grad
+            delta_q = self.get_jacobian_pinv(contact_q).T @ delta_sample_pose # need batchify
+            collision_flag = self.check_collision(contact_q + delta_q) # [num_samples]
+            contact_configs.grad[collision_flag] = 0.0
+            thetas.grad, phis.grad = self.get_spherical_grad(contact_configs_grad, target_pose)
+            optimizer.step()
+        new_init_pose = self.get_cartesian_mapping(thetas, phis, rs)
+        return init_pose, target_pose, compliance
+            
+                
+
+                    
+
+        
+
+            
+
+
 
 if __name__ == "__main__":
     import time

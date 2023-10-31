@@ -86,14 +86,23 @@ class TipValidator:
     
 
 class LeapHandValidator:
-    def __init__(self, pb_client, object_urdf, init_object_pose, uid, friction=0.5):
+    def __init__(self, pb_client, object_urdf, init_object_pose, uid, friction=0.5, visualize_tip=True):
         self._pb = pb_client
         self.robot = LeapHand(self._pb,uid=uid)
         self.oid = self._pb.loadURDF(object_urdf, basePosition=init_object_pose[0:3], baseOrientation=init_object_pose[3:7])
         self.floor_id = self._pb.loadURDF("assets/plane.urdf", basePosition=[0,0,-0.0325], baseOrientation=[0,0,0,1], useFixedBase=True)
         self._pb.changeDynamics(self.oid, -1, lateralFriction=friction)
         # create visualization tools
-        
+        self.visualize_tip = visualize_tip
+        if visualize_tip:
+            self.tips = []
+            color_code = [[1,0,0,0.7],
+                        [0,1,0,0.7],
+                        [0,0,1,0.7],
+                        [1,1,1,0.7]]
+            for i in range(4):
+                tip = rb.create_primitive_shape(self._pb, 0, pb.GEOM_SPHERE, [0.015], color=color_code[i], collidable=False)
+                self.tips.append(tip)
         self.robot.set_tip_friction(friction)
         self.controller = OSImpedanceController(self.robot)
 
@@ -117,7 +126,10 @@ class LeapHandValidator:
         self.controller.update_compliance(self.kP.flatten(), self.kD.flatten())
 
     def control_finger(self, ref_pose):
-        self.controller.update_goal(ref_pose,stepPhysics=True)
+        self.controller.update_goal(ref_pose.flatten(),stepPhysics=True)
+        if self.visualize_tip:
+            for i in range(4):
+                self._pb.resetBasePositionAndOrientation(self.tips[i], ref_pose[i], [0,0,0,1])
 
     def execute_grasp(self, tip_pose, ref_pose, object_pose, kP, kD, max_steps=10000):
         """
@@ -131,13 +143,17 @@ class LeapHandValidator:
         self.setCompliance(kP, kD)
         self.robot.configure_default_pos([-0.02,0.035, 0.09], [0, 0, 0, 1])
         #self.set_tip_pose(tip_pose)
+        # Each fingertip reach pre-grasp pose
+        for i in range(200):
+            self.control_finger(tip_pose)
+            time.sleep(0.001)
         input("Press Enter to continue...")
         for i in range(max_steps):
             if i == 800:
                 self._pb.setGravity(0.0, 0.0, -3.0)
                 self._pb.removeBody(self.floor_id)
-            self.control_finger(ref_pose.flatten())
-            print(self.robot.ee_pose())
+            self.control_finger(ref_pose)
+            #print(self.robot.ee_pose())
             #self._pb.stepSimulation()
             time.sleep(0.001)
         return self._pb.getBasePositionAndOrientation(self.oid)
