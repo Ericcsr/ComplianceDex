@@ -212,7 +212,40 @@ class GraspOptimizer:
         :return: thetas_grad [num_fingers]
         :return: phis_grad [num_fingers]
         """
-        raise NotImplementedError
+        mean, std = self.contact_configs_gpis(contact_configs)
+        d1,d2 = contact_configs.shape[0], contact_configs.shape[1]
+        vr = contact_configs - target_pose.unsqueeze(0)
+        r = vr.norm(dim=2) # [num_samples, num_fingers] 
+        w = r / r.sum(dim=0) # [num_samples, num_fingers] # weight
+        nr = vr / (r.unsqueeze(2) + 1e-6) # [num_samples, num_fingers, 3]
+        # Scale the gradient according to likelihood
+        posterior_weight = self.gaussian_likelihood(mean.view(d1,d2), std.view(d1,d2))
+        posterior_weight = posterior_weight / posterior_weight.sum(dim=0)
+        cartesian_grad = (contact_configs_grad * posterior_weight.unsqueeze(2) * w.unsqueeze(2)).sum(dim=0)
+        
+        # Map gradient to polar coordinate. Should also weight the gradient by how far the contact is from the target
+        thetas_grad = torch.zeros(d2, dtype=torch.float32)
+        phis_grad = torch.zeros(d2, dtype=torch.float32)
+        
+        normal_grad = (cartesian_grad * nr).sum(dim=2) * nr
+        orthonormal_grad = cartesian_grad - normal_grad
+        # need decomposition for theta and phi. Mind the sign.
+        thetas_grad
+
+
+
+
+    def contact_configs_gpis(self, contact_configs):
+        if self.contact_configs is not None and torch.isclose(self.contact_configs, contact_configs):
+            return self.mean, self.std
+        else:
+            self.contact_configs = contact_configs
+            mean, std = self.object_gpis(self.contact_configs)
+            self.mean, self.std = mean, std
+            return self.mean, self.std
+        
+    def gaussian_likelihood(self, mean, std):
+        return (1/std) * torch.exp(-0.5 * mean / std**2)
 
     def get_cartesian_mapping(self, thetas, phis, rs, target_pose, p=[1.0]):
         """
@@ -222,9 +255,14 @@ class GraspOptimizer:
         :params: rs: [num_fingers]
         :params: target_pose: [num_fingers, 3]
         :params: p: list, fractional indexing parameter target_pose + rs * p
-        :return: new_init_pose: [num_fingers, 3]
+        :return: new_pose: [num_fingers, 3]
         """
-        raise NotImplementedError
+        new_pose = torch.zeros_like(target_pose)
+        new_pose[:,0] = rs * torch.sin(thetas) * torch.cos(phis)
+        new_pose[:,1] = rs * torch.sin(thetas) * torch.sin(thetas)
+        new_pose[:,2] = rs * torch.cos(thetas)
+        new_pose = new_pose + target_pose
+        return new_pose
 
     # Should consider kinematic constraints, cannot guarantee a grasp is reachible, but gurantee no kinematic constraint violation
     def optimize_grasp(self, init_pose, target_pose, compliance, friction_mu):
@@ -245,7 +283,7 @@ class GraspOptimizer:
         thetas, phis, rs = self.get_spherical_mapping(init_pose, target_pose)
         contact_configs = self.sample_contacts(thetas, phis, rs)
         contact_q = self.solve_ik(contact_configs)
-        for i in range(num_iters):
+        for i in range(self.num_iters):
             contact_configs.grad, compliance.grad = self.compute_cost_grad(contact_configs, 
                                                                            target_pose, 
                                                                            compliance, 
@@ -255,10 +293,10 @@ class GraspOptimizer:
             delta_q = self.get_jacobian_pinv(contact_q).T @ delta_sample_pose # need batchify
             collision_flag = self.check_collision(contact_q + delta_q) # [num_samples]
             contact_configs.grad[collision_flag] = 0.0
-            thetas.grad, phis.grad = self.get_spherical_grad(contact_configs_grad, target_pose)
+            thetas.grad, phis.grad = self.get_spherical_grad(contact_configs.grad, target_pose)
             optimizer.step()
         new_init_pose = self.get_cartesian_mapping(thetas, phis, rs)
-        return init_pose, target_pose, compliance
+        return new_init_pose, target_pose, compliance
             
                 
 
