@@ -337,16 +337,22 @@ if __name__ == "__main__":
     # target_pose = torch.tensor([[[-0.0,0., 0.03],[0.03,-0.03, 0.03],[0.03,0.03, 0.03]]]).cuda()
     # compliance = torch.tensor([[20.,3.,3.]]).cuda()
 
+    mesh = o3d.io.read_triangle_mesh("assets/banana/textured.obj")
+    pcd = o3d.io.read_point_cloud("assets/banana/nontextured.ply")
+    tip_pose = torch.tensor([[[0.00,0.05, 0.01],[0.02,-0.0, -0.01],[0.01,-0.04,0.0],[-0.07,-0.01, 0.01]]]).cuda()
+    target_pose = torch.tensor([[[-0.03, 0.03, 0.0],[-0.03, 0.0, 0.0], [-0.03, -0.03, 0.0],[-0.04, -0.0, 0.0]]]).cuda()
+    compliance = torch.tensor([[10.0,10.0,10.0,20.0]]).cuda()
+
     # mesh = o3d.io.read_triangle_mesh("assets/lego/textured_cvx.stl")
     # pcd = o3d.io.read_point_cloud("assets/lego/nontextured.ply")
-    # tip_pose = torch.tensor([[[0.04,0.04, 0.0],[0.04,-0.0, 0.0],[0.04,-0.04,0.0],[-0.04,-0.0, 0.0]]]).cuda()
+    # tip_pose = torch.tensor([[[0.05,0.05, 0.02],[0.06,-0.0, -0.01],[0.03,-0.04,0.0],[-0.07,-0.01, 0.02]]]).cuda()
     # target_pose = torch.tensor([[[0.015, 0.04, 0.0],[0.015, -0.0, 0.0], [0.015, -0.03, 0.0],[-0.015, -0.0, 0.0]]]).cuda()
     # compliance = torch.tensor([[10.0,10.0,10.0,20.0]]).cuda()
-    mesh = o3d.io.read_triangle_mesh("assets/hammer/textured.stl")
-    pcd = o3d.io.read_point_cloud("assets/hammer/nontextured.ply")
-    tip_pose = torch.tensor([[[0.04,0.06, 0.0],[0.04,-0.0, 0.0],[0.04,-0.02,0.0],[-0.04,-0.0, 0.0]]]).cuda()
-    target_pose = torch.tensor([[[0.015, 0.04, 0.0],[0.015, -0.0, 0.0], [0.015, -0.04, 0.0],[-0.0, -0.0, 0.0]]]).cuda()
-    compliance = torch.tensor([[10.0,10.0,10.0,20.0]]).cuda()
+    # mesh = o3d.io.read_triangle_mesh("assets/hammer/textured.stl")
+    # pcd = o3d.io.read_point_cloud("assets/hammer/nontextured.ply")
+    # tip_pose = torch.tensor([[[0.04,0.06, 0.02],[0.04,-0.0, -0.01],[0.04,-0.02,0.0],[-0.04,-0.0, 0.01]]]).cuda()
+    # target_pose = torch.tensor([[[0.015, 0.04, 0.0],[0.015, -0.0, 0.0], [0.015, -0.04, 0.0],[-0.0, -0.0, 0.0]]]).cuda()
+    # compliance = torch.tensor([[10.0,10.0,10.0,20.0]]).cuda()
     friction_mu = 0.5
     
     # GPIS formulation
@@ -364,7 +370,7 @@ if __name__ == "__main__":
     tips, targets = vis_grasp(opt_tip_pose, target_pose)
     o3d.visualization.draw_geometries([pcd, *tips, *targets])
     print(compliance)
-    np.save("data/contact_hammer.npy", opt_tip_pose.cpu().detach().numpy().squeeze())
-    np.save("data/target_hammer.npy", target_pose.cpu().detach().numpy().squeeze())
-    np.save("data/compliance_hammer.npy", compliance.cpu().detach().numpy().squeeze())
+    np.save("data/contact_banana.npy", opt_tip_pose.cpu().detach().numpy().squeeze())
+    np.save("data/target_banana.npy", target_pose.cpu().detach().numpy().squeeze())
+    np.save("data/compliance_banana.npy", compliance.cpu().detach().numpy().squeeze())
     

@@ -8,13 +8,14 @@
       </geometry>
     </visual>
     <collision>
-      <origin xyz="0 0 0"/>
+      <origin xyz="0.01 0 0" rpy="1.5707 0 0"/>
       <geometry>
-        <mesh filename="textured.stl" scale="1 1 1"/>
+        <!-- <mesh filename="textured.stl" scale="1 1 1"/> -->
+        <cylinder radius="0.015" length="0.3"/>
       </geometry>
     </collision>
     <inertial>
-	<mass value="0.1"/>
+	<mass value="0.05"/>
 	<inertia ixx="1e-4" ixy="0" ixz="0" iyy="1e-4" iyz="0" izz="1e-4"/>
     </inertial>
   </link>

@@ -93,7 +93,7 @@ class TipValidator:
     
 
 class LeapHandValidator:
-    def __init__(self, pb_client, object_urdf, init_object_pose, uid, friction=0.5, visualize_tip=True):
+    def __init__(self, pb_client, object_urdf, init_object_pose, uid, friction=5.0, visualize_tip=True):
         self._pb = pb_client
         self.robot = LeapHand(self._pb,uid=uid)
         self.oid = self._pb.loadURDF(object_urdf, basePosition=init_object_pose[0:3], baseOrientation=init_object_pose[3:7])
@@ -148,7 +148,7 @@ class LeapHandValidator:
         """
         self.set_object_pose(object_pose)
         self.setCompliance(kP, kD)
-        self.robot.configure_default_pos([-0.0,0.035, 0.11], [0, 0, 0, 1])
+        self.robot.configure_default_pos([-0.03, 0.015, 0.11], [0, 0, 0, 1]) # -0.02
         #self.set_tip_pose(tip_pose)
         # Each fingertip reach pre-grasp pose
         input("Press Enter to continue...")
@@ -185,7 +185,7 @@ if __name__ == "__main__":
     center = target_pose.sum(axis=0) / 4
     finger_pose = finger_pose - center
     kp = np.load(f"data/compliance_{args.exp_name}.npy").repeat(3).reshape(-1,3) * 1.5
-    kd = np.sqrt(kp) * 0.6
+    kd = np.sqrt(kp) * 0.8
     validator = LeapHandValidator(pb, object_urdf, [center[0],center[1],center[2],0,0,0,1], uid=c)
     
     # finger_pose = np.array([[0.02, 0.04, 0.0], 
