@@ -6,6 +6,13 @@ from pybullet_robot.robots import LeapHand
 from pybullet_robot.controllers import OSImpedanceController
 import time
 
+object_dict = {
+    "box": "assets/cube_visualization.urdf",
+    "banana": "assets/banana/banana.urdf",
+    "hammer": "assets/hammer/hammer.urdf",
+    "lego": "assets/lego/lego.urdf",
+}
+
 class TipValidator:
     def __init__(self, pb_client, object_urdf, init_object_pose, num_fingers=4,friction=0.5):
         self._pb = pb_client
@@ -90,7 +97,7 @@ class LeapHandValidator:
         self._pb = pb_client
         self.robot = LeapHand(self._pb,uid=uid)
         self.oid = self._pb.loadURDF(object_urdf, basePosition=init_object_pose[0:3], baseOrientation=init_object_pose[3:7])
-        self.floor_id = self._pb.loadURDF("assets/plane.urdf", basePosition=[0,0,-0.0325], baseOrientation=[0,0,0,1], useFixedBase=True)
+        self.floor_id = self._pb.loadURDF("assets/plane.urdf", basePosition=[0,0,-0.02], baseOrientation=[0,0,0,1], useFixedBase=True)
         self._pb.changeDynamics(self.oid, -1, lateralFriction=friction)
         # create visualization tools
         self.visualize_tip = visualize_tip
@@ -141,9 +148,13 @@ class LeapHandValidator:
         """
         self.set_object_pose(object_pose)
         self.setCompliance(kP, kD)
-        self.robot.configure_default_pos([-0.02,0.035, 0.09], [0, 0, 0, 1])
+        self.robot.configure_default_pos([-0.0,0.035, 0.11], [0, 0, 0, 1])
         #self.set_tip_pose(tip_pose)
         # Each fingertip reach pre-grasp pose
+        input("Press Enter to continue...")
+        for i in range(100):
+            pb.stepSimulation()
+            time.sleep(0.001)
         for i in range(200):
             self.control_finger(tip_pose)
             time.sleep(0.001)
@@ -160,25 +171,38 @@ class LeapHandValidator:
 
 if __name__ == "__main__":
     import time
+    from argparse import ArgumentParser
+    parser = ArgumentParser()
+    parser.add_argument("--exp_name", type=str, required=True)
+    args = parser.parse_args()
+
     c = pb.connect(pb.GUI)
     pb.setTimeStep(0.001)
     pb.setGravity(0,0,-1.0)
-    object_urdf = "assets/cube_visualization.urdf"
-    validator = LeapHandValidator(pb, object_urdf, [0,0,0,0,0,0,1], uid=c)
-    finger_pose = np.array([[0.02, 0.04, 0.0], 
-                            [0.04, 0.0, 0.0],
-                            [0.02, -0.04, 0.0],
-                            [-0.04,0.0, 0.0]])
-    
-    target_pose = np.array([[0.02, 0.02, 0.0],
-                            [0.02, 0.0, 0.0], 
-                            [0.02, -0.02, 0.0],
-                            [-0.02, 0.0, 0.0]])
-    kp = np.array([[50.0,50.0,50.0],
-                   [50.0,50.0,50.0],
-                   [50.0,50.0,50.0],
-                   [50.0,50.0,50.0]]) * 1.5
+    object_urdf = object_dict[args.exp_name]
+    finger_pose = np.load(f"data/contact_{args.exp_name}.npy")
+    target_pose = np.load(f"data/target_{args.exp_name}.npy")
+    center = target_pose.sum(axis=0) / 4
+    finger_pose = finger_pose - center
+    kp = np.load(f"data/compliance_{args.exp_name}.npy").repeat(3).reshape(-1,3) * 1.5
     kd = np.sqrt(kp) * 0.6
+    validator = LeapHandValidator(pb, object_urdf, [center[0],center[1],center[2],0,0,0,1], uid=c)
+    
+    # finger_pose = np.array([[0.02, 0.04, 0.0], 
+    #                         [0.04, 0.0, 0.0],
+    #                         [0.02, -0.04, 0.0],
+    #                         [-0.04,0.0, 0.0]])
+    
+    # target_pose = np.array([[0.02, 0.02, 0.0],
+    #                         [0.02, 0.0, 0.0], 
+    #                         [0.02, -0.02, 0.0],
+    #                         [-0.02, 0.0, 0.0]])
+    # kp = np.array([[50.0,50.0,50.0],
+    #                [50.0,50.0,50.0],
+    #                [50.0,50.0,50.0],
+    #                [50.0,50.0,50.0]]) * 1.5
+
+    
     validator.execute_grasp(finger_pose,target_pose,[0,0,0,0,0,0,1],kp,kd)
 
 

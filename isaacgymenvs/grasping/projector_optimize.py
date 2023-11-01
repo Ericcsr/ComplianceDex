@@ -4,6 +4,23 @@ from torchsdf import compute_sdf
 from gpis import GPIS
 import torch
 
+def vis_grasp(tip_pose, target_pose):
+    tip_pose = tip_pose.cpu().detach().numpy().squeeze()
+    target_pose = target_pose.cpu().detach().numpy().squeeze()
+    tips = []
+    targets = []
+    color_code = np.array([[1,0,0],[0,1,0],[0,0,1],[1,1,0]])
+    for i in range(4):
+        tip = o3d.geometry.TriangleMesh.create_sphere(radius=0.005)
+        tip.paint_uniform_color(color_code[i])
+        tip.translate(tip_pose[i])
+        target = o3d.geometry.TriangleMesh.create_sphere(radius=0.005)
+        target.paint_uniform_color(color_code[i] * 0.5)
+        target.translate(target_pose[i])
+        tips.append(tip)
+        targets.append(target)
+    return tips, targets
+
 @torch.jit.script
 def optimal_transformation_batch(S1, S2, weight):
     """
@@ -11,12 +28,12 @@ def optimal_transformation_batch(S1, S2, weight):
     S2: [num_envs, num_points, 3]
     weight: [num_envs, num_points]
     """
-    weight = torch.nn.functional.normalize(weight, dim=1, p=1.0)
+    #weight = torch.nn.functional.normalize(weight, dim=1, p=1.0)
     weight = weight.unsqueeze(2) # [num_envs, num_points, 1]
     c1 = S1.mean(dim=1).unsqueeze(1) # [num_envs, 3]
     c2 = S2.mean(dim=1).unsqueeze(1)
     H = (weight * (S1 - c1)).transpose(1,2) @ (weight * (S2 - c2))
-    U, _, Vh = torch.linalg.svd(H)
+    U, _, Vh = torch.linalg.svd(H + 1e-6*torch.rand_like(H))
     V = Vh.mH
     R = V @ U.transpose(1,2)
     t = (weight * (S2 - (R@S1.transpose(1,2)).transpose(1,2))).sum(dim=1) / weight.sum(dim=1)
@@ -47,66 +64,70 @@ def force_eq_reward(tip_pose, target_pose, compliance, friction_mu, current_norm
     # measure cos similarity between force direction and surface normal
     ang_diff =  torch.einsum("ijk,ijk->ij",dir_vec, normal_eq)
     cos_mu = torch.sqrt(1/(1+torch.tensor(friction_mu)**2))
-    margin = (ang_diff - cos_mu).clamp(min=-0.99)
-    print(current_normal)
+    margin = (ang_diff - cos_mu).clamp(min=-0.999)
     # we hope margin to be as large as possible, never below zero
-    return torch.log(margin+1).sum(dim=1) + (force * torch.nn.functional.softmin(force)).sum(dim=1)
+    force_norm = force.norm(dim=2)
+    center_tip = tip_pose.mean(dim=1)
+    center_target = target_pose.mean(dim=1)
+    reward = torch.log(margin+1).sum(dim=1)
+    reward += (force_norm * torch.nn.functional.softmin(force_norm,dim=1)).sum(dim=1)
+    reward -= (center_tip - center_target).norm(dim=1) * 10.0
+    return reward , margin
 
 # sensitive to initial condition 
-def project_constraint_sdf(tip_pose, target_pose, compliance, opt_mask, friction_mu, object_mesh, num_iters=100, requires_grad=True):
+def project_constraint_sdf(tip_pose, target_pose, compliance, friction_mu, object_mesh, num_iters=200, requires_grad=True):
     """
+    NOTE: scale matters in running optimization, need to normalize the scale
     Params:
     tip_pose: [num_envs, num_fingers, 3]
     target_pose: [num_envs, num_fingers, 3]
     compliance: [num_envs, num_fingers]
     opt_mask: [num_envs, num_fingers]
     """
-    total_opt_mask = opt_mask.sum(dim=-1).bool()
-    num_active_env = total_opt_mask.sum()
-    tip_pose = tip_pose.clone()
-    compliance = compliance.clone()
+    tip_pose = tip_pose.clone().requires_grad_(True)
+    compliance = compliance.clone().requires_grad_(True)
     triangles = np.asarray(object_mesh.triangles)
     vertices = np.asarray(object_mesh.vertices)
     face_vertices = torch.from_numpy(vertices[triangles.flatten()].reshape(len(triangles),3,3)).cuda().float()
-    object_mesh.scale(0.95, center=[0,0,0])
+    object_mesh.scale(0.9, center=[0,0,0])
     vertices = np.asarray(object_mesh.vertices)
     face_vertices_deflate = torch.from_numpy(vertices[triangles.flatten()].reshape(len(triangles),3,3)).cuda().float()
-    var_tip = tip_pose[opt_mask].clone().requires_grad_(requires_grad)
-    var_kp = compliance[opt_mask].clone().requires_grad_(requires_grad)
-    var_tar = target_pose[opt_mask].unsqueeze(dim=1)
-    non_opt_mask = (~opt_mask)
-    non_opt_mask[~total_opt_mask] = False
-    rest_tip = tip_pose[non_opt_mask].view(num_active_env,tip_pose.shape[1]-1,3)
-    rest_kp = compliance[non_opt_mask].view(num_active_env,tip_pose.shape[1]-1)
-    rest_tar = target_pose[non_opt_mask].view(num_active_env,tip_pose.shape[1]-1,3)
-    opt_value = torch.inf * torch.ones(num_active_env).cuda()
-    opt_tip_pose = tip_pose[opt_mask].clone()
-    opt_compliance = compliance[opt_mask].clone()
-    optim = torch.optim.RMSprop([{"params":var_tip, "lr":1e-3}, 
-                                 {"params":var_kp, "lr":0.1}])
+    optim = torch.optim.RMSprop([{"params":tip_pose, "lr":1e-3}, 
+                                 {"params":compliance, "lr":0.2}])
+    opt_tip_pose = tip_pose.clone()
+    opt_compliance = compliance.clone()
+    opt_value = torch.inf * torch.ones(tip_pose.shape[0]).cuda()
+    normal = None
     for _ in range(num_iters):
         optim.zero_grad()
-        all_tip_pose = torch.cat([rest_tip,var_tip.unsqueeze(dim=1)],dim=1).view(-1,3)
-        
-        _,_,current_normal,_ = compute_sdf(all_tip_pose, face_vertices_deflate)
-        dist,_,_,_ = compute_sdf(all_tip_pose, face_vertices)
-        c = - force_eq_reward(torch.cat([rest_tip,var_tip.unsqueeze(dim=1)],dim=1), 
-                              torch.cat([rest_tar,var_tar],dim=1), 
-                              torch.cat([rest_kp, var_kp.unsqueeze(dim=1)],dim=1), 
-                              friction_mu, current_normal.view(num_active_env, tip_pose.shape[1], tip_pose.shape[2]))
-        dist = dist.view(num_active_env, tip_pose.shape[1])[:,-1]
-        l = c + 10000 * dist
+        all_tip_pose = tip_pose.view(-1,3)
+        _,sign1,current_normal1,_ = compute_sdf(all_tip_pose, face_vertices_deflate)
+        dist,sign2,current_normal2,_ = compute_sdf(all_tip_pose, face_vertices)
+        # Note: normal direction will flip when tip is inside the object, normal vector at surface is not defined.
+        current_normal = 0.5 * sign1.unsqueeze(1) * current_normal1 + 0.5 * sign2.unsqueeze(1) * current_normal2
+        current_normal = current_normal / current_normal.norm(dim=1).unsqueeze(1)
+        r, margin = force_eq_reward(tip_pose, 
+                              target_pose, 
+                              compliance, 
+                              friction_mu, 
+                              current_normal.view(tip_pose.shape[0], tip_pose.shape[1], tip_pose.shape[2]))
+        c = -r
+        dist = dist.view(tip_pose.shape[0], tip_pose.shape[1]).sum(dim=1)
+        l = c + 1000 * torch.sqrt(dist)
         l.sum().backward()
+        print("Loss:",float(l.sum()))
+        if torch.isnan(l.sum()):
+            print(dist, tip_pose, margin)
         with torch.no_grad():
             update_flag = l < opt_value
             if update_flag.sum():
+                normal = current_normal
                 opt_value[update_flag] = l[update_flag]
-                opt_tip_pose[update_flag] = var_tip[update_flag]
-                opt_compliance[update_flag] = var_kp[update_flag]
+                opt_tip_pose[update_flag] = tip_pose[update_flag]
+                opt_compliance[update_flag] = compliance[update_flag]
         optim.step()
-    tip_pose[opt_mask] = var_tip.detach()
-    compliance[opt_mask] = var_kp.detach()
-    return tip_pose, compliance
+    print(margin, normal)
+    return opt_tip_pose, opt_compliance
 
 def optimize_grasp_gpis(tip_pose, target_pose, compliance, opt_mask, friction_mu, gpis, num_iters=10):
     total_opt_mask = opt_mask.sum(dim=-1).bool()
@@ -241,9 +262,6 @@ class GraspOptimizer:
         phis_grad = (orthonormal_grad * basis_phi).sum(dim=1)
         return thetas_grad, phis_grad
 
-
-
-
     def contact_configs_gpis(self, contact_configs):
         if self.contact_configs is not None and torch.isclose(self.contact_configs, contact_configs):
             return self.mean, self.std
@@ -311,25 +329,25 @@ class GraspOptimizer:
         new_init_pose = self.get_cartesian_mapping(thetas, phis, rs)
         return new_init_pose, target_pose, compliance
             
-                
-
-                    
-
-        
-
-            
-
-
-
 if __name__ == "__main__":
     import time
-    box = o3d.geometry.TriangleMesh.create_box(1.0, 1.0, 1.0).translate([-0.5,-0.5,-0.5])
-    box.scale(0.1, center=[0,0,0])
-    tip_pose = torch.tensor([[[-0.051, 0., 0.03],[0.03,-0.051, 0.03],[0.03, 0.051, 0.03]]]).cuda()
-    target_pose = torch.tensor([[[-0.0,0., 0.03],[0.03,-0.03, 0.03],[0.03,0.03, 0.03]]]).cuda()
-    compliance = torch.tensor([[20.,3.,3.]]).cuda()
-    opt_mask = torch.tensor([[True, False, False]]).cuda()
-    friction_mu = 0.2
+
+    # mesh = o3d.geometry.TriangleMesh.create_box(0.1, 0.1, 0.1).translate([-0.05,-0.05,-0.05])
+    # tip_pose = torch.tensor([[[-0.071, 0., 0.03],[0.03,-0.061, 0.03],[0.03, 0.041, 0.03]]]).cuda()
+    # target_pose = torch.tensor([[[-0.0,0., 0.03],[0.03,-0.03, 0.03],[0.03,0.03, 0.03]]]).cuda()
+    # compliance = torch.tensor([[20.,3.,3.]]).cuda()
+
+    # mesh = o3d.io.read_triangle_mesh("assets/lego/textured_cvx.stl")
+    # pcd = o3d.io.read_point_cloud("assets/lego/nontextured.ply")
+    # tip_pose = torch.tensor([[[0.04,0.04, 0.0],[0.04,-0.0, 0.0],[0.04,-0.04,0.0],[-0.04,-0.0, 0.0]]]).cuda()
+    # target_pose = torch.tensor([[[0.015, 0.04, 0.0],[0.015, -0.0, 0.0], [0.015, -0.03, 0.0],[-0.015, -0.0, 0.0]]]).cuda()
+    # compliance = torch.tensor([[10.0,10.0,10.0,20.0]]).cuda()
+    mesh = o3d.io.read_triangle_mesh("assets/hammer/textured.stl")
+    pcd = o3d.io.read_point_cloud("assets/hammer/nontextured.ply")
+    tip_pose = torch.tensor([[[0.04,0.06, 0.0],[0.04,-0.0, 0.0],[0.04,-0.02,0.0],[-0.04,-0.0, 0.0]]]).cuda()
+    target_pose = torch.tensor([[[0.015, 0.04, 0.0],[0.015, -0.0, 0.0], [0.015, -0.04, 0.0],[-0.0, -0.0, 0.0]]]).cuda()
+    compliance = torch.tensor([[10.0,10.0,10.0,20.0]]).cuda()
+    friction_mu = 0.5
     
     # GPIS formulation
     # pcd = box.sample_points_poisson_disk(64)
@@ -341,4 +359,12 @@ if __name__ == "__main__":
     # print(time.time() - ts)
 
     # SDF formulation
-    print(project_constraint_sdf(tip_pose, target_pose, compliance, opt_mask, friction_mu, box))
+    opt_tip_pose, compliance = project_constraint_sdf(tip_pose, target_pose, compliance, friction_mu, mesh)
+    # Visualize target and tip pose
+    tips, targets = vis_grasp(opt_tip_pose, target_pose)
+    o3d.visualization.draw_geometries([pcd, *tips, *targets])
+    print(compliance)
+    np.save("data/contact_hammer.npy", opt_tip_pose.cpu().detach().numpy().squeeze())
+    np.save("data/target_hammer.npy", target_pose.cpu().detach().numpy().squeeze())
+    np.save("data/compliance_hammer.npy", compliance.cpu().detach().numpy().squeeze())
+    
