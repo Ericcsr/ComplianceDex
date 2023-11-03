@@ -41,7 +41,7 @@ def optimal_transformation_batch(S1, S2, weight):
 
 # Assume friction is uniform
 # Differentiable 
-def force_eq_reward(tip_pose, target_pose, compliance, friction_mu, current_normal):
+def force_eq_reward(tip_pose, target_pose, compliance, friction_mu, current_normal, mass=0.4, gravity=9.8, M=1.0, COM=None):
     """
     Params:
     tip_pose: world frame [num_envs, num_fingers, 3]
@@ -53,7 +53,19 @@ def force_eq_reward(tip_pose, target_pose, compliance, friction_mu, current_norm
     Returns:
     reward: [num_envs]
     """
-    R,t = optimal_transformation_batch(tip_pose, target_pose, compliance)
+    # Prepare dummy gravity
+    # Assume COM is at center of target
+    if gravity is not None:
+        dummy_tip = torch.zeros(tip_pose.shape[0], 1, 3).cuda()
+        dummy_tip[:,0,:] = target_pose.mean(dim=1) if COM is None else COM
+        dummy_target = torch.zeros(target_pose.shape[0], 1, 3).cuda()
+        dummy_target[:,0,2] = -M # much lower than center of mass
+        dummy_compliance = gravity * mass/M * torch.ones(compliance.shape[0], 1).cuda()
+        R,t = optimal_transformation_batch(torch.cat([tip_pose, dummy_tip], dim=1), 
+                                           torch.cat([target_pose, dummy_target], dim=1), 
+                                           torch.cat([compliance, dummy_compliance], dim=1))
+    else:
+        R,t = optimal_transformation_batch(tip_pose, target_pose, compliance)
     # tip position at equilirium
     tip_pose_eq = (R@tip_pose.transpose(1,2)).transpose(1,2) + t.unsqueeze(1)
     diff_vec = tip_pose_eq - target_pose
@@ -337,17 +349,17 @@ if __name__ == "__main__":
     # target_pose = torch.tensor([[[-0.0,0., 0.03],[0.03,-0.03, 0.03],[0.03,0.03, 0.03]]]).cuda()
     # compliance = torch.tensor([[20.,3.,3.]]).cuda()
 
-    mesh = o3d.io.read_triangle_mesh("assets/banana/textured.obj")
-    pcd = o3d.io.read_point_cloud("assets/banana/nontextured.ply")
-    tip_pose = torch.tensor([[[0.00,0.05, 0.01],[0.02,-0.0, -0.01],[0.01,-0.04,0.0],[-0.07,-0.01, 0.01]]]).cuda()
-    target_pose = torch.tensor([[[-0.03, 0.03, 0.0],[-0.03, 0.0, 0.0], [-0.03, -0.03, 0.0],[-0.04, -0.0, 0.0]]]).cuda()
-    compliance = torch.tensor([[10.0,10.0,10.0,20.0]]).cuda()
-
-    # mesh = o3d.io.read_triangle_mesh("assets/lego/textured_cvx.stl")
-    # pcd = o3d.io.read_point_cloud("assets/lego/nontextured.ply")
-    # tip_pose = torch.tensor([[[0.05,0.05, 0.02],[0.06,-0.0, -0.01],[0.03,-0.04,0.0],[-0.07,-0.01, 0.02]]]).cuda()
-    # target_pose = torch.tensor([[[0.015, 0.04, 0.0],[0.015, -0.0, 0.0], [0.015, -0.03, 0.0],[-0.015, -0.0, 0.0]]]).cuda()
+    # mesh = o3d.io.read_triangle_mesh("assets/banana/textured.obj")
+    # pcd = o3d.io.read_point_cloud("assets/banana/nontextured.ply")
+    # tip_pose = torch.tensor([[[0.00,0.05, 0.01],[0.02,-0.0, -0.01],[0.01,-0.04,0.0],[-0.07,-0.01, 0.01]]]).cuda()
+    # target_pose = torch.tensor([[[-0.03, 0.03, 0.0],[-0.03, 0.0, 0.0], [-0.03, -0.03, 0.0],[-0.04, -0.0, 0.0]]]).cuda()
     # compliance = torch.tensor([[10.0,10.0,10.0,20.0]]).cuda()
+
+    mesh = o3d.io.read_triangle_mesh("assets/lego/textured_cvx.stl")
+    pcd = o3d.io.read_point_cloud("assets/lego/nontextured.ply")
+    tip_pose = torch.tensor([[[0.05,0.05, 0.02],[0.06,-0.0, -0.01],[0.03,-0.04,0.0],[-0.07,-0.01, 0.02]]]).cuda()
+    target_pose = torch.tensor([[[0.015, 0.04, 0.0],[0.015, -0.0, 0.0], [0.015, -0.03, 0.0],[-0.015, -0.0, 0.0]]]).cuda()
+    compliance = torch.tensor([[100.0,100.0,100.0,200.0]]).cuda()
     # mesh = o3d.io.read_triangle_mesh("assets/hammer/textured.stl")
     # pcd = o3d.io.read_point_cloud("assets/hammer/nontextured.ply")
     # tip_pose = torch.tensor([[[0.04,0.06, 0.02],[0.04,-0.0, -0.01],[0.04,-0.02,0.0],[-0.04,-0.0, 0.01]]]).cuda()
@@ -370,7 +382,7 @@ if __name__ == "__main__":
     tips, targets = vis_grasp(opt_tip_pose, target_pose)
     o3d.visualization.draw_geometries([pcd, *tips, *targets])
     print(compliance)
-    np.save("data/contact_banana.npy", opt_tip_pose.cpu().detach().numpy().squeeze())
-    np.save("data/target_banana.npy", target_pose.cpu().detach().numpy().squeeze())
-    np.save("data/compliance_banana.npy", compliance.cpu().detach().numpy().squeeze())
+    np.save("data/contact_banana_.npy", opt_tip_pose.cpu().detach().numpy().squeeze())
+    np.save("data/target_banana_.npy", target_pose.cpu().detach().numpy().squeeze())
+    np.save("data/compliance_banana_.npy", compliance.cpu().detach().numpy().squeeze())
     
