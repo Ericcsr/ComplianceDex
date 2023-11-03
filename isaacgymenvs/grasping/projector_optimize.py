@@ -174,7 +174,7 @@ def optimize_grasp_sdf_kin(joint_angles, target_pose, compliance, friction_mu, o
     else:
         optim = torch.optim.RMSprop([{"params":joint_angles, "lr":1e-3},
                                      {"params":compliance, "lr":0.2}])
-    opt_tip_pose = tip_pose.clone()
+    opt_joint_angle = tip_pose.clone()
     opt_compliance = compliance.clone()
     opt_target_pose = target_pose.clone()
     opt_value = torch.inf * torch.ones(tip_pose.shape[0]).cuda()
