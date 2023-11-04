@@ -33,3 +33,6 @@ outputs/
 /isaacgymenvs/wandb
 /thirdparty/TorchSDF/build
 /thirdparty/TorchSDF/torchsdf.egg-info
+/thirdparty/differentiable-robot-model/__pycache__*
+/thirdparty/differentiable-robot-model/.idea*
+
