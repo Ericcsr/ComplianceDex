@@ -87,8 +87,8 @@ def force_eq_reward(tip_pose, target_pose, compliance, friction_mu, current_norm
     ang_diff =  torch.einsum("ijk,ijk->ij",dir_vec, normal_eq)
     cos_mu = torch.sqrt(1/(1+torch.tensor(friction_mu)**2))
     margin = (ang_diff - cos_mu).clamp(min=-0.999)
-    if (margin == -0.999).any():
-        print("Debug:",dir_vec, normal_eq)
+    # if (margin == -0.999).any():
+    #     print("Debug:",dir_vec, normal_eq)
     # we hope margin to be as large as possible, never below zero
     force_norm = force.norm(dim=2)
     reward = torch.log(margin+1).sum(dim=1)
@@ -383,7 +383,6 @@ class GPISGraspOptimizer:
         tip_pose: [num_envs, num_fingers, 3]
         target_pose: [num_envs, num_fingers, 3]
         compliance: [num_envs, num_fingers]
-        opt_mask: [num_envs, num_fingers]
         """
         tip_pose = tip_pose.clone().requires_grad_(True)
         compliance = compliance.clone().requires_grad_(True)
@@ -436,168 +435,155 @@ class GPISGraspOptimizer:
             optim.step()
             with torch.no_grad(): # apply bounding box constraints
                 tip_pose.clamp_(min=self.tip_bounding_box[0], max=self.tip_bounding_box[1])
-                target_pose.clamp_(min=self.tip_bounding_box[0], max=self.tip_bounding_box[1])
+                #target_pose.clamp_(min=self.tip_bounding_box[0], max=self.tip_bounding_box[1])
         print(margin, normal)
         return opt_tip_pose, opt_compliance, opt_target_pose
 
 # Should revise this algorithm with LooseKinGraspOptimizer
+# need to systematically setting magical weights
 class ProbabilisticGraspOptimizer:
-    def __init__(self, num_iters, hand_model, object_gpis, num_samples=5, lr=[1e-3, 0.1], isf_barrier=10000, var_cost=10):
+    def __init__(self, tip_bounding_box, num_iters=2000, num_samples=5, lr=[1e-3, 0.2, 1e-3], isf_barrier=1000, var_cost=10, optimize_target=False, device="cuda:0"):
         self.num_iters = num_iters
+        self.tip_bounding_box = [torch.tensor(tip_bounding_box[0]).cuda().view(-1,3), torch.tensor(tip_bounding_box[1]).cuda().view(-1,3)]
         self.isf_barrier = isf_barrier
         self.var_cost = var_cost
         self.lr = lr
-        self.hand_model = hand_model
-        self.object_gpis = object_gpis
         self.num_samples = num_samples
-        self.samples_p = np.linspace(0,1.0, self.num_samples)
-
-    def check_collision(self,q, hand_base=None):
-        """
-        check self collision, use default hand base pose if hand_base = None
-        :params: q: hand joint angle [num_dofs]
-        :params: hand_base: base position respect to the object frame [7]
-        :return: collision_flag: whether there are collision
-        """
-        raise NotImplementedError
+        self.optimize_target = optimize_target
+        self.device = device
+        self.samples_p = torch.linspace(0, 1.0, self.num_samples).to(device)
 
     def get_spherical_mapping(self, init_pose, target_pose):
         """
-        :params: init_pose: initial tip pose [num_fingers, 3]
-        :params: target_pose: target tip pose [num_fingers, 3]
-        :return: thetas: rotation along y axis [num_fingers]
-        :return: phis: rotation along z axis [num_fingers]
-        :return: rs: distance between init and target [num_fingers]
+        :params: init_pose: initial tip pose [num_envs, num_fingers, 3]
+        :params: target_pose: target tip pose [num_envs, num_fingers, 3]
+        :return: thetas: rotation along y axis [num_envs, num_fingers]
+        :return: phis: rotation along z axis [num_envs, num_fingers]
+        :return: rs: distance between init and target [num_envs, num_fingers]
         """
-        raise NotImplementedError
-
-    def sample_contacts(self, thetas, phis, rs):
-        """
-        sample contact configurations between initial and target positions
-        :params: thetas: rotation along y axis [num_fingers]
-        :params: phis: rotation along z axis [num_fingers]
-        :params: rs: distance between init and target [num_fingers]
-        :return: contact_configs: [num_samples, num_fingers, 3]
-        """
-        raise NotImplementedError
-
-    def compute_cost_grad(self, contact_configs, target_pose, compliance, friction_mu):
-        """
-        compute gradient of all contact configs w.r.t. cost
-        :params: contact_configs: [num_samples, num_fingers, 3]
-        :params: target_pose: [num_fingers, 3]
-        :params: compliance: [num_fingers]
-        :friction_mu: float
-        :return: contact_configs_grad [num_samples, num_fingers, 3]
-        :return: compliance_grad [num_fingers] 
-        """
-        raise NotImplementedError
-
-    # TODO: Check mathematical correctness
-    def get_spherical_grad(self, contact_configs_grad, contact_configs, target_pose, thetas, phis):
-        """
-        convert contact_configuration grads to grads in spherical coordiantes,
-        weight different gradient component using likelihood value of each samples.
-        :params: contact_configs_grad: [num_samples, num_fingers, 3]
-        :params: contact_configs: [num_samples, num_fingers, 3]
-        :params: target_pose: [num_samples, 3]
-        :params: thetas: rotation along y axis [num_fingers]
-        :params: phis: rotation along z axis [num_fingers]
-        :return: thetas_grad [num_fingers]
-        :return: phis_grad [num_fingers]
-        """
-        mean, std = self.contact_configs_gpis(contact_configs)
-        d1,d2 = contact_configs.shape[0], contact_configs.shape[1]
-        vr = contact_configs - target_pose.unsqueeze(0)
-        r = vr.norm(dim=2) # [num_samples, num_fingers] 
-        w = r / r.sum(dim=0) # [num_samples, num_fingers] # weight
-        nr = vr / (r.unsqueeze(2) + 1e-6) # [num_samples, num_fingers, 3]
-        # Scale the gradient according to likelihood
-        posterior_weight = self.gaussian_likelihood(mean.view(d1,d2), std.view(d1,d2))
-        posterior_weight = posterior_weight / posterior_weight.sum(dim=0)
-        cartesian_grad = (contact_configs_grad * posterior_weight.unsqueeze(2) * w.unsqueeze(2)).sum(dim=0)
-        
-        # Map gradient to polar coordinate. Should also weight the gradient by how far the contact is from the target
-        thetas_grad = torch.zeros(d2, dtype=torch.float32)
-        phis_grad = torch.zeros(d2, dtype=torch.float32)
-        
-        normal_grad = (cartesian_grad * nr).sum(dim=2) * nr
-        orthonormal_grad = cartesian_grad - normal_grad
-        # need decomposition for theta and phi.
-        basis_theta = torch.vstack([-torch.sin(thetas)*torch.cos(phis),
-                                -torch.sin(thetas)*torch.sin(phis),
-                                -torch.cos(thetas)]).T
-        basis_phi = torch.vstack([-torch.sin(phis), torch.cos(phis), torch.zeros_like(phis)]).T
-        thetas_grad = (orthonormal_grad * basis_theta).sum(dim=1)
-        phis_grad = (orthonormal_grad * basis_phi).sum(dim=1)
-        return thetas_grad, phis_grad
-
-    def contact_configs_gpis(self, contact_configs):
-        if self.contact_configs is not None and torch.isclose(self.contact_configs, contact_configs):
-            return self.mean, self.std
-        else:
-            self.contact_configs = contact_configs
-            mean, std = self.object_gpis(self.contact_configs)
-            self.mean, self.std = mean, std
-            return self.mean, self.std
+        delta_pose = init_pose - target_pose
+        rs = delta_pose.norm(dim=2)
+        thetas = torch.acos(delta_pose[:,:,2] / rs)
+        phis = torch.atan2(delta_pose[:,:,1], delta_pose[:,:,0])
+        return thetas, phis, rs
         
     def gaussian_likelihood(self, mean, std):
         return (1/std) * torch.exp(-0.5 * mean / std**2)
 
-    def get_cartesian_mapping(self, thetas, phis, rs, target_pose, p=[1.0]):
+    def get_cartesian_mapping(self, thetas, phis, rs, target_pose, p=None):
         """
+        NOTE: Should be fully differentiable
         map spherical coordinate back to cartesian coordinate
-        :params: thetas: [num_fingers]
-        :params: phis: [num_fingers]
-        :params: rs: [num_fingers]
-        :params: target_pose: [num_fingers, 3]
+        :params: thetas: [num_envs, num_fingers] angle between the vector and z axis
+        :params: phis: [num_envs, num_fingers] angle between projection of the vector and x axis
+        :params: rs: [num_envs, num_fingers]
+        :params: target_pose: [num_envs, num_fingers, 3]
         :params: p: list, fractional indexing parameter target_pose + rs * p
-        :return: new_pose: [num_fingers, 3]
+        :return: new_pose: [num_envs, num_samples, num_fingers, 3]
         """
-        new_pose = torch.zeros_like(target_pose)
-        new_pose[:,0] = rs * torch.sin(thetas) * torch.cos(phis)
-        new_pose[:,1] = rs * torch.sin(thetas) * torch.sin(thetas)
-        new_pose[:,2] = rs * torch.cos(thetas)
-        new_pose = new_pose + target_pose
-        return new_pose
+        if p is None:
+            num_samples = self.num_samples
+            p = self.samples_p.view(1, num_samples, 1)
+        else:
+            num_samples = len(p)
+            p = torch.tensor(p, device=self.device).float().view(1, num_samples, 1)
+        rs = rs.unsqueeze(1).repeat(1, num_samples,1)
+        thetas = thetas.unsqueeze(1)
+        phis = phis.unsqueeze(1)
+        new_pose = torch.stack([p * rs * torch.sin(thetas) * torch.cos(phis),
+                                p * rs * torch.sin(thetas) * torch.sin(phis),
+                                p * rs * torch.cos(thetas)], dim= 3) + target_pose.unsqueeze(1)
+        return new_pose.squeeze(1)
 
     # Should consider kinematic constraints, cannot guarantee a grasp is reachible, but gurantee no kinematic constraint violation
-    def optimize_grasp(self, init_pose, target_pose, compliance, friction_mu):
+    def optimize(self, init_pose, target_pose, compliance, friction_mu, gpis):
         """
         Optimize grasp with kinematic constraints
-        :params: init_pose: [num_fingers, 3]
-        :params: target_pose: [num_fingers, 3]
-        :params: compliance: [num_fingers]
+        :params: init_pose: [num_envs, num_fingers, 3]
+        :params: target_pose: [num_envs, num_fingers, 3]
+        :params: compliance: [num_envs, num_fingers]
         :params: friction_mu: float
-        :return: new_init_pose: [num_fingers, 3]
-        :return: new_target_pose: [num_fingers, 3]
-        :return: compliance: [num_fingers]
+        :return: new_init_pose: [num_envs, num_fingers, 3]
+        :return: new_target_pose: [num_envs, num_fingers, 3]
+        :return: compliance: [num_envs, num_fingers]
         """
+        init_pose = init_pose.clone()
         compliance = compliance.clone()
         thetas, phis, rs = self.get_spherical_mapping(init_pose, target_pose)
-        optimizer = torch.optim.RMSprop([{"params":thetas, "lr":self.lr[0]},
+        rs = torch.ones_like(thetas).float().to(thetas.device)
+        if self.optimize_target:
+            target_pose = target_pose.clone().requires_grad_(True)
+            optim = torch.optim.RMSprop([{"params":thetas, "lr":self.lr[0]},
                                          {"params":phis, "lr":self.lr[0]},
+                                         {"params":target_pose, "lr":self.lr[2]}, 
                                          {"params":compliance, "lr":self.lr[1]}])
-        contact_configs = self.sample_contacts(thetas, phis, rs)
-        contact_q = self.solve_ik(contact_configs)
-        for i in range(self.num_iters):
-            contact_configs.grad, compliance.grad = self.compute_cost_grad(contact_configs, 
-                                                                           target_pose, 
-                                                                           compliance, 
-                                                                           friction_mu)
-            # Check collision and update
-            delta_sample_pose = self.lr[0] * contact_configs.grad
-            delta_q = self.get_jacobian_pinv(contact_q).T @ delta_sample_pose # need batchify
-            collision_flag = self.check_collision(contact_q + delta_q) # [num_samples]
-            contact_configs.grad[collision_flag] = 0.0
-            thetas.grad, phis.grad = self.get_spherical_grad(contact_configs.grad, 
-                                                             contact_configs,
-                                                             target_pose,
-                                                             thetas,
-                                                             phis)
-            optimizer.step()
-        new_init_pose = self.get_cartesian_mapping(thetas, phis, rs)
-        return new_init_pose, target_pose, compliance
+        else:
+            optim = torch.optim.RMSprop([{"params":thetas, "lr":self.lr[0]},
+                                         {"params":phis, "lr":self.lr[0]},
+                                         {"params":compliance, "lr":0.2}])
+        opt_theta = thetas.clone()
+        opt_phi = phis.clone()
+        opt_compliance = compliance.clone()
+        opt_target_pose = target_pose.clone()
+        opt_value = torch.inf * torch.ones(tip_pose.shape[0]).cuda()
+        normal = None
+        # prepare some dimensional data
+        num_envs, num_fingers = init_pose.shape[0], init_pose.shape[1]
+
+        for _ in range(self.num_iters):
+            optim.zero_grad()
+            all_tip_pose = self.get_cartesian_mapping(thetas, phis, rs, target_pose).view(-1,3)
+            dist, var = gpis.pred(all_tip_pose) 
+            tar_dist, _ = gpis.pred(target_pose.view(-1,3))
+            current_normal = gpis.compute_normal(all_tip_pose) # [num_envs * num_samples * num_fingers, 3]
+            # posterior weight, should normalize likelihood value over different samples.
+            likelihood = self.gaussian_likelihood(dist, var).view(num_envs, self.num_samples, num_fingers) # [num_envs * num_sample * num_fingers]
+            posterior_weight = likelihood / likelihood.sum(dim=1).unsqueeze(1) # [num_envs, num_samples, num_fingers]
+            
+            # TODO: Need to check tensor layout
+            extended_target_pose = target_pose.unsqueeze(1).repeat(1, self.num_samples, 1, 1).view(num_envs * self.num_samples, num_fingers, 3)
+            _, margin, force_norm = force_eq_reward(
+                                all_tip_pose.view(num_envs * self.num_samples,
+                                                  num_fingers, 3),
+                                extended_target_pose, 
+                                compliance.repeat(self.num_samples,1), 
+                                friction_mu, 
+                                current_normal.view(num_envs * self.num_samples, 
+                                                    num_fingers, 3))
+            
+            center_tip = all_tip_pose.view(num_envs, self.num_samples, num_fingers, 3).mean(dim=2)
+            center_target = extended_target_pose.mean(dim=2)
+            center_cost = (center_tip - center_target).norm(dim=2) * 10.0 # [num_envs, num_samples]
+
+            task_cost = -torch.log(margin+1).view(num_envs, self.num_samples, num_fingers) * 5.0
+            force_cost = -(force_norm * torch.nn.functional.softmin(force_norm,dim=1)).clamp(max=1.0).view(num_envs, self.num_samples, num_fingers)
+            dist_cost = self.isf_barrier * torch.abs(dist).view(num_envs , self.num_samples, num_fingers)
+            variance_cost = self.var_cost * var.view(num_envs , self.num_samples, num_fingers)
+            print(posterior_weight.shape, task_cost.shape, dist_cost.shape, force_cost.shape, variance_cost.shape)
+            fingerwise_cost = posterior_weight * (task_cost + dist_cost + force_cost + variance_cost)
+            tar_dist_cost = 10 * tar_dist.view(num_envs , num_fingers).sum(dim=1)
+            # need to weight loss from each samples with their total likelihood
+            l = fingerwise_cost.view(-1,num_fingers).sum(dim=1) + center_cost.sum(dim=1) + tar_dist_cost # Encourage target pose to stay inside the object
+            l.sum().backward()
+            print("Loss:",float(l.sum()), float(force_cost.sum()), float(center_cost.sum()), float(dist_cost.sum()), float(tar_dist_cost.sum()), float(variance_cost.sum()))
+            if torch.isnan(l.sum()):
+                print("Loss NaN trace:",dist, tip_pose, target_pose, margin)
+            with torch.no_grad():
+                update_flag = l < opt_value # mask on env level
+                if update_flag.sum():
+                    normal = current_normal
+                    opt_value[update_flag] = l[update_flag]
+                    opt_theta[update_flag] = thetas[update_flag]
+                    opt_phi[update_flag] = phis[update_flag]
+                    opt_target_pose[update_flag] = target_pose[update_flag]
+                    opt_compliance[update_flag] = compliance[update_flag]
+            optim.step()
+            with torch.no_grad(): # apply bounding box constraints
+                #tip_pose.clamp_(min=self.tip_bounding_box[0], max=self.tip_bounding_box[1])
+                compliance.clamp_(min=0.001) # prevent negative compliance
+                #target_pose.clamp_(min=self.tip_bounding_box[0], max=self.tip_bounding_box[1])
+        print(margin, normal)
+        return self.get_cartesian_mapping(opt_theta, opt_phi, rs, opt_target_pose, [1.0]), opt_compliance, opt_target_pose
             
 if __name__ == "__main__":
     import time
@@ -607,24 +593,19 @@ if __name__ == "__main__":
     # target_pose = torch.tensor([[[-0.0,0., 0.03],[0.03,-0.03, 0.03],[0.03,0.03, 0.03]]]).cuda()
     # compliance = torch.tensor([[20.,3.,3.]]).cuda()
 
-    # mesh = o3d.io.read_triangle_mesh("assets/banana/textured.obj")
-    # pcd = o3d.io.read_point_cloud("assets/banana/nontextured.ply")
-    # tip_pose = torch.tensor([[[0.00,0.05, 0.01],[0.02,-0.0, -0.01],[0.01,-0.04,0.0],[-0.07,-0.01, 0.01]]]).cuda()
+    mesh = o3d.io.read_triangle_mesh("assets/banana/textured.obj")
+    pcd = o3d.io.read_point_cloud("assets/banana/nontextured.ply")
+    tip_pose = torch.tensor([[[0.00,0.05, 0.01],[0.02,-0.0, -0.01],[0.01,-0.04,0.0],[-0.07,-0.01, 0.01]]]).cuda()
     # target_pose = torch.tensor([[[-0.03, 0.03, 0.0],[-0.03, 0.0, 0.0], [-0.03, -0.03, 0.0],[-0.04, -0.0, 0.0]]]).cuda()
     # compliance = torch.tensor([[10.0,10.0,10.0,20.0]]).cuda()
 
-    mesh = o3d.io.read_triangle_mesh("assets/lego/textured_cvx.stl")
-    pcd = o3d.io.read_point_cloud("assets/lego/nontextured.ply")
-    tip_pose = torch.tensor([[[0.05,0.05, 0.02],[0.06,-0.0, -0.01],[0.03,-0.04,0.0],[-0.07,-0.01, 0.02]]]).cuda()
-    joint_angles = torch.tensor([[np.pi/6, -np.pi/6, np.pi/6, np.pi/6,
-                                np.pi/6, 0.0     , np.pi/6, np.pi/6,
-                                np.pi/6, np.pi/6 , np.pi/6, np.pi/6,
-                                np.pi/3, np.pi/4 , np.pi/6, np.pi/6]]).cuda()
-    joint_angles = joint_angles + torch.randn_like(joint_angles).cuda() * 0.5
+    # mesh = o3d.io.read_triangle_mesh("assets/lego/textured_cvx.stl")
+    # pcd = o3d.io.read_point_cloud("assets/lego/nontextured.ply")
+    # tip_pose = torch.tensor([[[0.05,0.05, 0.02],[0.06,-0.0, -0.01],[0.03,-0.04,0.0],[-0.07,-0.01, 0.02]]]).cuda()
     # target_pose = torch.tensor([[[0.015, 0.04, 0.0],[0.015, -0.0, 0.0], [0.015, -0.03, 0.0],[-0.015, -0.0, 0.0]]]).cuda()
     rand_n = torch.rand(4,1)
     target_pose = rand_n * torch.tensor(FINGERTIP_LB).view(-1,3) + (1 - rand_n) * torch.tensor(FINGERTIP_UB).view(-1,3)
-    target_pose = target_pose.unsqueeze(0).cuda()
+    target_pose = 0.5 * target_pose.unsqueeze(0).cuda()
     compliance = torch.tensor([[10.0,10.0,10.0,20.0]]).cuda()
     # mesh = o3d.io.read_triangle_mesh("assets/hammer/textured.stl")
     # pcd = o3d.io.read_point_cloud("assets/hammer/nontextured.ply")
@@ -651,7 +632,8 @@ if __name__ == "__main__":
     # opt_tip_pose = grasp_optimizer.forward_kinematics(joint_angles).view(1,-1,3)
     
     #grasp_optimizer = LooseKinGraspOptimizer(tip_bounding_box=[FINGERTIP_LB, FINGERTIP_UB], optimize_target=True)
-    grasp_optimizer = GPISGraspOptimizer(tip_bounding_box=[FINGERTIP_LB, FINGERTIP_UB], optimize_target=True)
+    #grasp_optimizer = GPISGraspOptimizer(tip_bounding_box=[FINGERTIP_LB, FINGERTIP_UB], optimize_target=True)
+    grasp_optimizer = ProbabilisticGraspOptimizer(tip_bounding_box=[FINGERTIP_LB, FINGERTIP_UB], optimize_target=True)
     opt_tip_pose, compliance, opt_target_pose = grasp_optimizer.optimize(tip_pose, target_pose, compliance, friction_mu, gpis)
 
     # Visualize target and tip pose
