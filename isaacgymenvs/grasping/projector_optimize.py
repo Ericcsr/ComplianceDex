@@ -636,7 +636,7 @@ if __name__ == "__main__":
     # GPIS formulation
     pcd_gpis = mesh.sample_points_poisson_disk(64)
     points = torch.from_numpy(np.asarray(pcd_gpis.points)).cuda().float()
-    gpis = GPIS()
+    gpis = GPIS(0.02,0.1)
     gpis.fit(points, torch.zeros_like(points[:,0]).cuda().view(-1,1))
     # ts = time.time()
     # print(project_constraint_gpis(tip_pose, target_pose, compliance, opt_mask, friction_mu, gpis))

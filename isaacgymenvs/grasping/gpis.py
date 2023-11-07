@@ -1,7 +1,7 @@
 import torch
 
 class GPIS:
-    def __init__(self, sigma=0.05, bias=0.1):
+    def __init__(self, sigma=0.4, bias=2):
         self.sigma = sigma
         self.bias = bias
 
@@ -50,12 +50,23 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
     import numpy as np
 
-    mesh = o3d.geometry.TriangleMesh.create_box(0.06,0.06,0.06).translate([-0.03,-0.03,-0.03])
-    pcd = mesh.sample_points_poisson_disk(64)
+    mesh = o3d.geometry.TriangleMesh.create_box(1, 1, 1).translate([-0.5,-0.5,-0.5])
+    pcd = mesh.sample_points_uniformly(64)
     points = torch.from_numpy(np.asarray(pcd.points)).cuda().float()
     gpis = GPIS()
-    gpis.fit(points, torch.zeros_like(points[:,0]).cuda().view(-1,1))
-    test_X = torch.stack(torch.meshgrid(torch.linspace(-0.1,0.1,100),torch.linspace(-0.1,0.1,100), torch.linspace(-0.1,0.1,100)),dim=2).cuda()
+    gpis.fit(points, torch.zeros_like(points[:,0]).cuda().view(-1,1),noise=0.04)
+    test_X = torch.stack(torch.meshgrid(torch.linspace(-1,1,100),torch.linspace(-1,1,100),indexing="xy"),dim=2).cuda()
+    test_z = 0.02 * torch.ones(100,100,1).float().cuda()
     y_test = torch.zeros(100,100,100).float().cuda()
+    for i in range(100):
+        #print(test_X.shape, test_z.shape)
+        x = torch.cat([test_X, i * test_z - 1],dim=2)
+        print(x[:,:,2])
+        y_test[i] = gpis.pred(x.view(-1,3))[0].view(100,100)
+
+    print(y_test.argmin())
+    np.save("gpis.npy", y_test.cpu().numpy())
+    plt.imshow(y_test.cpu().numpy()[50], cmap="seismic", vmax=0.5, vmin=-0.5)
+    plt.show()
     
 
