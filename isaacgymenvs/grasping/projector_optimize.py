@@ -581,7 +581,7 @@ class SphericalGraspOptimizer:
 # need to systematically setting magical weights
 # Theoretically should work, need debugging
 class ProbabilisticGraspOptimizer:
-    def __init__(self, tip_bounding_box, num_iters=2000, num_samples=5, lr=[1e-3, 0.2, 1e-3], isf_barrier=1000, var_cost=10, optimize_target=False, device="cuda:0"):
+    def __init__(self, tip_bounding_box, num_iters=2000, num_samples=5, lr=[5e-4, 0.2, 1e-3], isf_barrier=1000, var_cost=10, optimize_target=False, device="cuda:0"):
         self.num_iters = num_iters
         self.tip_bounding_box = [torch.tensor(tip_bounding_box[0]).cuda().view(-1,3), torch.tensor(tip_bounding_box[1]).cuda().view(-1,3)]
         self.isf_barrier = isf_barrier
@@ -590,7 +590,7 @@ class ProbabilisticGraspOptimizer:
         self.num_samples = num_samples
         self.optimize_target = optimize_target
         self.device = device
-        self.samples_p = torch.linspace(0, 1.0, self.num_samples).to(device)
+        self.samples_p = torch.linspace(0.6, 1.4, self.num_samples).to(device)
 
     def get_spherical_mapping(self, init_pose, target_pose, requires_grad=True):
         """
@@ -604,7 +604,7 @@ class ProbabilisticGraspOptimizer:
         rs = delta_pose.norm(dim=2)
         thetas = torch.acos(delta_pose[:,:,2] / rs)
         phis = torch.atan2(delta_pose[:,:,1], delta_pose[:,:,0])
-        return thetas.requires_grad_(requires_grad), phis.requires_grad_(requires_grad), rs
+        return thetas.requires_grad_(requires_grad), phis.requires_grad_(requires_grad), rs.requires_grad_(requires_grad)
         
     def gaussian_likelihood(self, mean, std):
         return (1/std) * torch.exp(-0.5 * mean / std**2)
@@ -634,6 +634,19 @@ class ProbabilisticGraspOptimizer:
                                 p * rs * torch.cos(thetas)], dim= 3) + target_pose.unsqueeze(1)
         return new_pose.squeeze(1)
 
+    def create_rs_bounding_box(self,thetas, phis, target_pose):
+        """
+        NOTE: Assume work in torch.no_grad()
+        :params: thetas: [num_envs, num_fingers] angle between the vector and z axis
+        :params: phis: [num_envs, num_fingers] angle between the vector and x axis
+        :params: target_pose: [num_envs, num_fingers, 3]
+        :return: rs_ub: [num_envs, num_fingers] bounding boxes
+        """
+        delta_pose = self.get_cartesian_mapping(thetas, phis, torch.ones_like(thetas).float().cuda(), target_pose, p=[1.0])
+        dummy_tip_pose = (delta_pose + target_pose).clamp(min=self.tip_bounding_box[0], max=self.tip_bounding_box[1])
+        delta_clamped = dummy_tip_pose - target_pose
+        return delta_clamped[:,:,0] / delta_pose[:,:,0]
+
     # Should consider kinematic constraints, cannot guarantee a grasp is reachible, but gurantee no kinematic constraint violation
     def optimize(self, init_pose, target_pose, compliance, friction_mu, gpis):
         """
@@ -647,27 +660,30 @@ class ProbabilisticGraspOptimizer:
         :return: compliance: [num_envs, num_fingers]
         """
         init_pose = init_pose.clone()
-        compliance = compliance.clone()
+        compliance = compliance.clone().requires_grad_(True)
         thetas, phis, rs = self.get_spherical_mapping(init_pose, target_pose)
-        rs = torch.ones_like(thetas).float().to(thetas.device)
         if self.optimize_target:
             target_pose = target_pose.clone().requires_grad_(True)
             optim = torch.optim.RMSprop([{"params":thetas, "lr":self.lr[0]},
                                          {"params":phis, "lr":self.lr[0]},
+                                         {"params":rs, "lr":self.lr[2]},
                                          {"params":target_pose, "lr":self.lr[2]}, 
                                          {"params":compliance, "lr":self.lr[1]}])
         else:
             optim = torch.optim.RMSprop([{"params":thetas, "lr":self.lr[0]},
                                          {"params":phis, "lr":self.lr[0]},
+                                         {"params":rs, "lr":self.lr[2]},
                                          {"params":compliance, "lr":0.2}])
-        opt_theta = thetas.clone()
-        opt_phi = phis.clone()
+        opt_thetas = thetas.clone()
+        opt_phis = phis.clone()
+        opt_rs = rs.clone()
         opt_compliance = compliance.clone()
         opt_target_pose = target_pose.clone()
         opt_value = torch.inf * torch.ones(tip_pose.shape[0]).cuda()
         normal = None
         # prepare some dimensional data
         num_envs, num_fingers = init_pose.shape[0], init_pose.shape[1]
+        prior_weight = torch.tensor([0.1,0.2,0.4,0.2,0.1], device=self.device).view(1,-1,1)
 
         for _ in range(self.num_iters):
             optim.zero_grad()
@@ -678,6 +694,8 @@ class ProbabilisticGraspOptimizer:
             # posterior weight, should normalize likelihood value over different samples.
             likelihood = self.gaussian_likelihood(dist, var).view(num_envs, self.num_samples, num_fingers) # [num_envs * num_sample * num_fingers]
             posterior_weight = likelihood / likelihood.sum(dim=1).unsqueeze(1) # [num_envs, num_samples, num_fingers]
+            weight = prior_weight * posterior_weight # [num_envs, num_samples, num_fingers]
+            weight = weight / weight.sum(dim=1).unsqueeze(1)
             
             # TODO: Need to check tensor layout
             extended_target_pose = target_pose.unsqueeze(1).repeat(1, self.num_samples, 1, 1).view(num_envs * self.num_samples, num_fingers, 3)
@@ -698,11 +716,10 @@ class ProbabilisticGraspOptimizer:
             force_cost = -(force_norm * torch.nn.functional.softmin(force_norm,dim=1)).clamp(max=1.0).view(num_envs, self.num_samples, num_fingers)
             dist_cost = self.isf_barrier * torch.abs(dist).view(num_envs , self.num_samples, num_fingers)
             variance_cost = self.var_cost * var.view(num_envs , self.num_samples, num_fingers)
-            print(posterior_weight.shape, task_cost.shape, dist_cost.shape, force_cost.shape, variance_cost.shape, center_cost.shape)
-            fingerwise_cost = (posterior_weight * (task_cost + dist_cost + force_cost + variance_cost)).sum(dim=1) # [num_envs, num_fingers]
+            fingerwise_cost = (weight * (task_cost + dist_cost + force_cost + variance_cost)).mean(dim=1) # [num_envs, num_fingers]
             tar_dist_cost = 10 * tar_dist.view(num_envs , num_fingers)
             # need to weight loss from each samples with their total likelihood
-            l = fingerwise_cost.sum(dim=1) + center_cost.sum(dim=1) + tar_dist_cost.sum(dim=1) # Encourage target pose to stay inside the object
+            l = fingerwise_cost.sum(dim=1) + center_cost.mean(dim=1) + tar_dist_cost.sum(dim=1) # Encourage target pose to stay inside the object
             l.sum().backward()
             print("Loss:",float(l.sum()), float(force_cost.sum()), float(center_cost.sum()), float(dist_cost.sum()), float(tar_dist_cost.sum()), float(variance_cost.sum()))
             if torch.isnan(l.sum()):
@@ -712,17 +729,20 @@ class ProbabilisticGraspOptimizer:
                 if update_flag.sum():
                     normal = current_normal
                     opt_value[update_flag] = l[update_flag]
-                    opt_theta[update_flag] = thetas[update_flag]
-                    opt_phi[update_flag] = phis[update_flag]
+                    opt_thetas[update_flag] = thetas[update_flag]
+                    opt_phis[update_flag] = phis[update_flag]
+                    opt_rs[update_flag] = rs[update_flag]
                     opt_target_pose[update_flag] = target_pose[update_flag]
                     opt_compliance[update_flag] = compliance[update_flag]
             optim.step()
             with torch.no_grad(): # apply bounding box constraints
-                #tip_pose.clamp_(min=self.tip_bounding_box[0], max=self.tip_bounding_box[1])
                 compliance.clamp_(min=0.001) # prevent negative compliance
-                #target_pose.clamp_(min=self.tip_bounding_box[0], max=self.tip_bounding_box[1])
+                target_pose.clamp_(min=self.tip_bounding_box[0], max=self.tip_bounding_box[1])
+                # only clip rs
+                rs_ub = self.create_rs_bounding_box(thetas, phis, target_pose)
+                rs.clamp_(min=torch.zeros_like(rs_ub), max=rs_ub)
         print(margin, normal)
-        return self.get_cartesian_mapping(opt_theta, opt_phi, rs, opt_target_pose, [1.0]), opt_compliance, opt_target_pose
+        return self.get_cartesian_mapping(opt_thetas, opt_phis, opt_rs, opt_target_pose, [1.0]), opt_compliance, opt_target_pose
             
 if __name__ == "__main__":
     import time
@@ -756,7 +776,7 @@ if __name__ == "__main__":
     # GPIS formulation
     pcd_gpis = mesh.sample_points_poisson_disk(64)
     points = torch.from_numpy(np.asarray(pcd_gpis.points)).cuda().float()
-    gpis = GPIS(0.02,0.1)
+    gpis = GPIS(0.03,0.1)
     gpis.fit(points, torch.zeros_like(points[:,0]).cuda().view(-1,1))
     # ts = time.time()
     # print(project_constraint_gpis(tip_pose, target_pose, compliance, opt_mask, friction_mu, gpis))
@@ -772,7 +792,8 @@ if __name__ == "__main__":
     
     #grasp_optimizer = LooseKinGraspOptimizer(tip_bounding_box=[FINGERTIP_LB, FINGERTIP_UB], optimize_target=True)
     #grasp_optimizer = GPISGraspOptimizer(tip_bounding_box=[FINGERTIP_LB, FINGERTIP_UB], optimize_target=True)
-    grasp_optimizer = SphericalGraspOptimizer(tip_bounding_box=[FINGERTIP_LB, FINGERTIP_UB], optimize_target=True)
+    #grasp_optimizer = SphericalGraspOptimizer(tip_bounding_box=[FINGERTIP_LB, FINGERTIP_UB], optimize_target=True)
+    grasp_optimizer = ProbabilisticGraspOptimizer(tip_bounding_box=[FINGERTIP_LB, FINGERTIP_UB], optimize_target=True)
     opt_tip_pose, compliance, opt_target_pose = grasp_optimizer.optimize(tip_pose, target_pose, compliance, friction_mu, gpis)
 
     # Visualize target and tip pose
