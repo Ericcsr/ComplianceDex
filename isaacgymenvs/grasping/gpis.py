@@ -4,6 +4,7 @@ class GPIS:
     def __init__(self, sigma=0.4, bias=2):
         self.sigma = sigma
         self.bias = bias
+        self.fraction = None
 
     def exponentiated_quadratic(self, xa, xb):
         # L2 distance (Squared Euclidian)
@@ -31,39 +32,58 @@ class GPIS:
         print(E12.shape)
         return (mu_2 + self.bias).squeeze(),  torch.sqrt(torch.diag(E2)+1e-6) # prevent nan
     
+    def pred2(self, X2):
+        E12 = self.exponentiated_quadratic(self.X1, X2)
+        E11_inv = torch.inverse(self.E11)
+        mu_2 = E12.T @ E11_inv @ self.y1
+        E22 = self.exponentiated_quadratic(X2, X2)
+        E2 = E22 - E12.T @ E11_inv @ E12
+        return (mu_2 + self.bias).squeeze(),  torch.sqrt(torch.diag(E2)+1e-6) # prevent nan
+    
     # If we only take a subset of X1, we can sample normal from the function
-    def compute_normal(self, X2):
+    def compute_normal(self, X2, index=None):
+        if index is None:
+            idx = torch.arange(len(self.X1)).to(X2.device)
+        else:
+            idx = torch.tensor(index).to(X2.device)
         with torch.enable_grad():
             X2 = X2.detach().clone()
             X2.requires_grad_(True)
             E12 = self.exponentiated_quadratic(self.X1, X2)
             # Solve
-            solved = torch.linalg.solve(self.E11, E12).T
+            #solved = torch.linalg.solve(self.E11, E12).T
+            E11_inv = torch.inverse(self.E11)
             # Compute posterior mean
-            mu_2 = solved @ self.y1
+            weight = (E11_inv @ self.y1)[idx]
+            mu_2 = E12[idx].T @ weight
             (mu_2**2).sum().backward()
             normal = X2.grad
             normal = normal / (torch.norm(normal, dim=1, keepdim=True)+1e-6) # prevent nan when closing to the surface
-            return -normal
-    
-    def sample_normal(self, X2, index):
+            if index is None:
+                return -normal
+            else:
+                return -normal, weight.sum()
+        
+    def compute_multinormals(self, X2, num_normal_samples):
         """
-        X2: [num_test, dim]
-        index: [num_index]
+        num_normal_samples should be odd
         """
-        with torch.enable_grad():
-            X2 = X2.detach().clone()
-            X2.requires_grad_(True)
-            E12 = self.exponentiated_quadratic(self.X1[index], X2)
-            # Solve
-            E11 = self.exponentiated_quadratic(self.X1[index], self.X1[index]) + ((self.noise ** 2) * torch.eye(len(self.X1[index])).to(self.X2.device))
-            solved = torch.linalg.solve(E11, E12).T
-            # Compute posterior mean
-            mu_2 = solved @ self.y1[index]
-            (mu_2**2).sum().backward()
-            normal = X2.grad
-            normal = normal / (torch.norm(normal, dim=1, keepdim=True)+1e-6) # prevent nan when closing to the surface
-            return -normal
+        if self.fraction is None:
+            self.fraction = torch.linspace(0.5,1, num_normal_samples//2)
+            self.indices = []
+            for i in range(num_normal_samples//2):
+                self.indices.append(list(range(int(self.fraction[i] * len(self.X1)))))
+            self.indices.append(list(range(len(self.X1))))
+            for i in range(num_normal_samples//2):
+                self.indices.append(list(range(int(1-self.fraction[-i-1]), len(self.X1))))
+        normals = []
+        weights = []
+        for i in range(num_normal_samples):
+            normal, weight = self.compute_normal(X2, self.indices[i])
+            normals.append(normal)
+            weights.append(weight)
+        return torch.vstack(normals), torch.hstack(weights)
+
         
 
         
@@ -75,7 +95,7 @@ if __name__ == "__main__":
     import numpy as np
 
     mesh = o3d.geometry.TriangleMesh.create_box(1, 1, 1).translate([-0.5,-0.5,-0.5])
-    pcd = mesh.sample_points_uniformly(64)
+    pcd = mesh.sample_points_poisson_disk(64)
     points = torch.from_numpy(np.asarray(pcd.points)).cuda().float()
     gpis = GPIS()
     gpis.fit(points, torch.zeros_like(points[:,0]).cuda().view(-1,1),noise=0.04)
@@ -92,7 +112,13 @@ if __name__ == "__main__":
     # np.save("gpis.npy", y_test.cpu().numpy())
     # plt.imshow(y_test.cpu().numpy()[50], cmap="seismic", vmax=0.5, vmin=-0.5)
     # plt.show()
-    dist, var = gpis.pred(torch.tensor([[-0.6,0, 0],[-0.6,0.0, 0.0]]).cuda())
-    print(dist)
+    mean1,var1 = gpis.pred(torch.tensor([[-0.6,0, 0],[-0.6,0.0, 0.0]]).cuda())
+    mean2,var2 = gpis.pred2(torch.tensor([[-0.6,0, 0],[-0.6,0.0, 0.0]]).cuda())
+    auto_normal = gpis.compute_normal(torch.tensor([[-0.6,0, 0],[-0.6,0.0, 0.0]]).cuda())
+    #analytical_normal = gpis.analytical_normal(torch.tensor([[-0.6,0, 0],[-0.6,0.0, 0.0]]).cuda())
+    normals, weights = gpis.compute_multinormals(torch.tensor([[-0.6,0, 0],[-0.6,0.0, 0.0]]).cuda(), num_normal_samples=5)
+    #print(auto_normal, analytical_normal)
+    print(mean1, mean2)
+    print(var1, var2)
     
 
