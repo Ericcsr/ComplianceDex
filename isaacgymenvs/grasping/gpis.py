@@ -29,7 +29,6 @@ class GPIS:
         # Compute the posterior covariance
         E22 = self.exponentiated_quadratic(X2, X2)
         E2 = E22 - (solved @ E12)
-        print(E12.shape)
         return (mu_2 + self.bias).squeeze(),  torch.sqrt(torch.diag(E2)+1e-6) # prevent nan
     
     def pred2(self, X2):
@@ -66,10 +65,13 @@ class GPIS:
         
     def compute_multinormals(self, X2, num_normal_samples):
         """
-        num_normal_samples should be odd
+        :params: num_normal_samples: should be odd int
+        :params: X2: [num_test, 3]
+        :return: normals: [num_test, num_normal_samples, 3]
+        :return: weights: [num_normal_samples]
         """
         if self.fraction is None:
-            self.fraction = torch.linspace(0.5,1, num_normal_samples//2)
+            self.fraction = torch.linspace(0.8,1, num_normal_samples//2)
             self.indices = []
             for i in range(num_normal_samples//2):
                 self.indices.append(list(range(int(self.fraction[i] * len(self.X1)))))
@@ -82,7 +84,8 @@ class GPIS:
             normal, weight = self.compute_normal(X2, self.indices[i])
             normals.append(normal)
             weights.append(weight)
-        return torch.vstack(normals), torch.hstack(weights)
+        weights = torch.hstack(weights)
+        return torch.stack(normals, dim=1), weights / weights.sum()
 
         
 

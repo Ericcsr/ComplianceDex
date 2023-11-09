@@ -582,16 +582,18 @@ class SphericalGraspOptimizer:
 # need to systematically setting magical weights
 # Theoretically should work, need debugging
 class ProbabilisticGraspOptimizer:
-    def __init__(self, tip_bounding_box, num_iters=200, num_samples=5, lr=[5e-4, 0.2, 1e-3], isf_barrier=1000, var_cost=10, optimize_target=False, device="cuda:0"):
+    def __init__(self, tip_bounding_box, num_iters=200, num_linear_samples=5, num_normal_samples=3, lr=[5e-4, 0.2, 1e-3], isf_barrier=1000, var_cost=10, optimize_target=False, device="cuda:0"):
         self.num_iters = num_iters
         self.tip_bounding_box = [torch.tensor(tip_bounding_box[0]).cuda().view(-1,3), torch.tensor(tip_bounding_box[1]).cuda().view(-1,3)]
         self.isf_barrier = isf_barrier
         self.var_cost = var_cost
         self.lr = lr
-        self.num_samples = num_samples
+        self.num_linear_samples = num_linear_samples
+        self.num_normal_samples = num_normal_samples
+        self.num_samples = num_linear_samples * num_normal_samples
         self.optimize_target = optimize_target
         self.device = device
-        self.samples_p = torch.linspace(0.88, 1.12, self.num_samples).to(device)
+        self.samples_p = torch.linspace(0.88, 1.12, self.num_linear_samples).repeat_interleave(self.num_normal_samples).to(device)
 
     def get_spherical_mapping(self, init_pose, target_pose, requires_grad=True):
         """
@@ -680,21 +682,25 @@ class ProbabilisticGraspOptimizer:
         opt_rs = rs.clone()
         opt_compliance = compliance.clone()
         opt_target_pose = target_pose.clone()
-        opt_value = torch.inf * torch.ones(tip_pose.shape[0]).cuda()
+        opt_value = torch.inf * torch.ones(init_pose.shape[0]).cuda()
         # prepare some dimensional data
         num_envs, num_fingers = init_pose.shape[0], init_pose.shape[1]
-        prior_weight = torch.tensor([0.1,0.2,0.4,0.2,0.1], device=self.device).view(1,-1,1)
+        prior_weight = torch.tensor([0.1,0.2,0.4,0.2,0.1], device=self.device).repeat_interleave(self.num_normal_samples).view(1,-1,1)
         opt_margin = None
         for _ in range(self.num_iters):
             optim.zero_grad()
-            all_tip_pose = self.get_cartesian_mapping(thetas, phis, rs, target_pose).view(-1,3)
+            tip_pose = self.get_cartesian_mapping(thetas, phis, rs, target_pose) # [num_envs, num_linear_samples * num_normal_samples, num_fingers, 3]
+            all_tip_pose = tip_pose.view(-1,3)
             dist, var = gpis.pred(all_tip_pose) 
             tar_dist, _ = gpis.pred(target_pose.view(-1,3))
-            current_normal = gpis.compute_normal(all_tip_pose) # [num_envs * num_samples * num_fingers, 3]
+            subset_tip_pose = tip_pose[:,::self.num_normal_samples,:].reshape(-1,3) # [num_envs * num_linear_samples * num_fingers, 3]
+            current_normal, normal_weights = gpis.compute_multinormals(subset_tip_pose, self.num_normal_samples) # [num_envs * num_linear_samples * num_fingers, num_normal_samples, (3)]
+            current_normal = current_normal.view(num_envs , self.num_linear_samples , num_fingers,self.num_normal_samples,3).transpose(2,3).reshape(-1,3)
+            normal_weights = normal_weights.view(1, self.num_normal_samples,1).repeat(1,self.num_linear_samples,1)
             # posterior weight, should normalize likelihood value over different samples.
             likelihood = self.gaussian_likelihood(dist, var).view(num_envs, self.num_samples, num_fingers) # [num_envs * num_sample * num_fingers]
-            posterior_weight = likelihood / likelihood.sum(dim=1).unsqueeze(1) # [num_envs, num_samples, num_fingers]
-            weight = prior_weight * posterior_weight # [num_envs, num_samples, num_fingers]
+            posterior_weight = likelihood / likelihood.sum(dim=1).unsqueeze(1) # [num_envs, num_linear_samples * num_normal_samples, num_fingers]
+            weight = prior_weight * posterior_weight * normal_weights # [num_envs, num_linear_samples * num_normal_samples, num_fingers]
             weight = weight / weight.sum(dim=1).unsqueeze(1)
             
             # TODO: Need to check tensor layout
