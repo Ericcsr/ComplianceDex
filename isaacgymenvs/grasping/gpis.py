@@ -55,13 +55,13 @@ class GPIS:
             # Compute posterior mean
             weight = (E11_inv @ self.y1)[idx]
             mu_2 = E12[idx].T @ weight
-            (mu_2**2).sum().backward()
+            mu_2.sum().backward()
             normal = X2.grad
             normal = normal / (torch.norm(normal, dim=1, keepdim=True)+1e-6) # prevent nan when closing to the surface
             if index is None:
-                return -normal
+                return normal
             else:
-                return -normal, weight.sum()
+                return normal, weight.sum()
         
     def compute_multinormals(self, X2, num_normal_samples):
         """
