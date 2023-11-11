@@ -1,7 +1,7 @@
 import torch
 
 class GPIS:
-    def __init__(self, sigma=0.4, bias=2):
+    def __init__(self, sigma=0.6, bias=2):
         self.sigma = sigma
         self.bias = bias
         self.fraction = None
@@ -86,6 +86,19 @@ class GPIS:
             weights.append(weight)
         weights = torch.hstack(weights)
         return torch.stack(normals, dim=1), weights / weights.sum()
+    
+    def get_visualization_data(self, lb, ub, steps=100):
+        test_X = torch.stack(torch.meshgrid(torch.linspace(lb[0],ub[0],steps),
+                                            torch.linspace(lb[1],ub[1],steps),
+                                            torch.linspace(lb[2],ub[2],steps),indexing="xy"),dim=3).to(self.X1.device) # [steps, steps, steps, 3]
+        test_mean, test_var = torch.zeros(steps,steps,steps), torch.zeros(steps,steps,steps)
+        for i in range(steps):
+            mean, var = self.pred(test_X[i].view(-1,3)) # [steps**3]
+            test_mean[i] = mean.view(steps,steps)
+            test_var[i] = var.view(steps,steps)
+        return test_mean.cpu().numpy(), test_var.cpu().numpy(), np.asarray(lb), np.asarray(ub)
+
+
 
         
 
@@ -102,26 +115,19 @@ if __name__ == "__main__":
     points = torch.from_numpy(np.asarray(pcd.points)).cuda().float()
     gpis = GPIS()
     gpis.fit(points, torch.zeros_like(points[:,0]).cuda().view(-1,1),noise=0.04)
-    # test_X = torch.stack(torch.meshgrid(torch.linspace(-1,1,100),torch.linspace(-1,1,100),indexing="xy"),dim=2).cuda()
-    # test_z = 0.02 * torch.ones(100,100,1).float().cuda()
-    # y_test = torch.zeros(100,100,100).float().cuda()
-    # for i in range(100):
-    #     #print(test_X.shape, test_z.shape)
-    #     x = torch.cat([test_X, i * test_z - 1],dim=2)
-    #     print(x[:,:,2])
-    #     y_test[i] = gpis.pred(x.view(-1,3))[0].view(100,100)
+    test_mean, test_var, lb, ub = gpis.get_visualization_data([-1,-1,-1],[1,1,1],steps=100)
+    np.savez("gpis.npz", mean=test_mean, var=test_var, ub=ub, lb=lb)
+    plt.imshow(test_mean[:,:,50], cmap="seismic", vmax=0.5, vmin=-0.5)
+    plt.show()
 
-    # print(y_test.argmin())
-    # np.save("gpis.npy", y_test.cpu().numpy())
-    # plt.imshow(y_test.cpu().numpy()[50], cmap="seismic", vmax=0.5, vmin=-0.5)
-    # plt.show()
-    mean1,var1 = gpis.pred(torch.tensor([[-0.6,0, 0],[-0.6,0.0, 0.0]]).cuda())
-    mean2,var2 = gpis.pred2(torch.tensor([[-0.6,0, 0],[-0.6,0.0, 0.0]]).cuda())
-    auto_normal = gpis.compute_normal(torch.tensor([[-0.6,0, 0],[-0.6,0.0, 0.0]]).cuda())
-    #analytical_normal = gpis.analytical_normal(torch.tensor([[-0.6,0, 0],[-0.6,0.0, 0.0]]).cuda())
-    normals, weights = gpis.compute_multinormals(torch.tensor([[-0.6,0, 0],[-0.6,0.0, 0.0]]).cuda(), num_normal_samples=5)
-    #print(auto_normal, analytical_normal)
-    print(mean1, mean2)
-    print(var1, var2)
+
+    # mean1,var1 = gpis.pred(torch.tensor([[-0.6,0, 0],[-0.6,0.0, 0.0]]).cuda())
+    # mean2,var2 = gpis.pred2(torch.tensor([[-0.6,0, 0],[-0.6,0.0, 0.0]]).cuda())
+    # auto_normal = gpis.compute_normal(torch.tensor([[-0.6,0, 0],[-0.6,0.0, 0.0]]).cuda())
+    # #analytical_normal = gpis.analytical_normal(torch.tensor([[-0.6,0, 0],[-0.6,0.0, 0.0]]).cuda())
+    # normals, weights = gpis.compute_multinormals(torch.tensor([[-0.6,0, 0],[-0.6,0.0, 0.0]]).cuda(), num_normal_samples=5)
+    # #print(auto_normal, analytical_normal)
+    # print(mean1, mean2)
+    # print(var1, var2)
     
 
