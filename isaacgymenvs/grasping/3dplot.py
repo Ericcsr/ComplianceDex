@@ -50,9 +50,9 @@ for i in range(0, num_steps, args.stride):
     m = cm.ScalarMappable(norm=norm, cmap='jet')
     m.set_array([])
     fcolors = m.to_rgba(color_dimension)
-
+    contour_mask = (Z >-0.001) * (Z < 0.001)
+    fcolors[contour_mask] = [1,1,1,1]
     # Plot the surface.
-    print(fcolors)
     surf = ax.plot_surface(X, Y, Z, cmap=cm.coolwarm,facecolors=fcolors,
                         linewidth=0, antialiased=True)
     surf2 = ax.plot_surface(X, Y, np.zeros_like(Z))
