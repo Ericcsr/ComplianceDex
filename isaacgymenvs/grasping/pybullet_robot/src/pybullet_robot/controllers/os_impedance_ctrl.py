@@ -55,6 +55,9 @@ class OSImpedanceController(OSControllerBase):
             Jpinv_sub = np.linalg.pinv(J_sub)
             tau[i*4:(i+1)*4] += (np.eye(4) - J_sub.T @ Jpinv_sub.T)@ (1.0 * (self._robot.ref_q[i*4:(i+1)*4] - self._robot.angles()[i*4:(i+1)*4]))
 
+        # add gravity compensation force
+        tau += self._robot.gravity_compensation()
+
         # joint torques to be commanded
         #print(tau)
         return tau, error

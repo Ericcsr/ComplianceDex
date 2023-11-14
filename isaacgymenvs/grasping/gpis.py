@@ -1,43 +1,60 @@
 import torch
 
 class GPIS:
-    def __init__(self, sigma=0.6, bias=2):
+    def __init__(self, sigma=0.6, bias=2, kernel="tps"):
         self.sigma = sigma
         self.bias = bias
         self.fraction = None
+        if kernel == "tps":
+            self.kernel_function = self.thin_plate_spline
+        elif kernel == "rbf":
+            self.kernel_function = self.exponentiated_quadratic
 
     def exponentiated_quadratic(self, xa, xb):
         # L2 distance (Squared Euclidian)
         sq_norm = -0.5 * torch.cdist(xa,xb)**2 / self.sigma**2
         return torch.exp(sq_norm)
     
+    def thin_plate_spline(self, xa, xb, R=None):
+        # L2 distance (Squared Euclidian)
+        if R is None:
+            R = self.R
+        sq_norm = torch.cdist(xa,xb)
+        return 2 * sq_norm**3 - 3 * R * sq_norm**2 + R**3
+        
+
+    # noise can also be a vector
     def fit(self, X1, y1, noise=0.0):
+        # Find maximum pair wise distance within training data
+        if self.kernel_function == self.thin_plate_spline:
+            self.R = torch.max(torch.cdist(X1, X1))
         self.X1 = X1
         self.y1 = y1 - self.bias
         self.noise = noise
-        self.E11 = self.exponentiated_quadratic(X1, X1) + ((self.noise ** 2) * torch.eye(len(X1)).to(X1.device))
+        self.E11 = self.kernel_function(X1, X1) + ((self.noise ** 2) * torch.eye(len(X1)).to(X1.device))
 
     def pred(self, X2):
         """
         X2: [num_test, dim]
         """
-        E12 = self.exponentiated_quadratic(self.X1, X2)
+        E12 = self.kernel_function(self.X1, X2)
         # Solve
         solved = torch.linalg.solve(self.E11, E12).T
         # Compute posterior mean
         mu_2 = solved @ self.y1
         # Compute the posterior covariance
-        E22 = self.exponentiated_quadratic(X2, X2)
+        E22 = self.kernel_function(X2, X2)
         E2 = E22 - (solved @ E12)
-        return (mu_2 + self.bias).squeeze(),  torch.sqrt(torch.diag(E2)+1e-6) # prevent nan
+        print(E2.diag())
+        return (mu_2 + self.bias).squeeze(),  torch.sqrt(torch.abs(torch.diag(E2))) # prevent nan
     
     def pred2(self, X2):
-        E12 = self.exponentiated_quadratic(self.X1, X2)
+        E12 = self.kernel_function(self.X1, X2)
         E11_inv = torch.inverse(self.E11)
         mu_2 = E12.T @ E11_inv @ self.y1
-        E22 = self.exponentiated_quadratic(X2, X2)
+        E22 = self.kernel_function(X2, X2)
         E2 = E22 - E12.T @ E11_inv @ E12
-        return (mu_2 + self.bias).squeeze(),  torch.sqrt(torch.diag(E2)+1e-6) # prevent nan
+        return (mu_2 + self.bias).squeeze(),  torch.sqrt(torch.abs(torch.diag(E2))) # prevent nan
     
     # If we only take a subset of X1, we can sample normal from the function
     def compute_normal(self, X2, index=None):
@@ -48,7 +65,7 @@ class GPIS:
         with torch.enable_grad():
             X2 = X2.detach().clone()
             X2.requires_grad_(True)
-            E12 = self.exponentiated_quadratic(self.X1, X2)
+            E12 = self.kernel_function(self.X1, X2)
             # Solve
             #solved = torch.linalg.solve(self.E11, E12).T
             E11_inv = torch.inverse(self.E11)
@@ -93,15 +110,10 @@ class GPIS:
                                             torch.linspace(lb[2],ub[2],steps),indexing="xy"),dim=3).to(self.X1.device) # [steps, steps, steps, 3]
         test_mean, test_var = torch.zeros(steps,steps,steps), torch.zeros(steps,steps,steps)
         for i in range(steps):
-            mean, var = self.pred(test_X[i].view(-1,3)) # [steps**3]
+            mean, var = self.pred2(test_X[i].view(-1,3)) # [steps**3]
             test_mean[i] = mean.view(steps,steps)
             test_var[i] = var.view(steps,steps)
         return test_mean.cpu().numpy(), test_var.cpu().numpy(), np.asarray(lb), np.asarray(ub)
-
-
-
-        
-
         
 # TODO: Need to visualize GPIS
 
@@ -110,14 +122,36 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
     import numpy as np
 
-    mesh = o3d.geometry.TriangleMesh.create_box(1, 1, 1).translate([-0.5,-0.5,-0.5])
-    pcd = mesh.sample_points_poisson_disk(64)
+    # mesh = o3d.geometry.TriangleMesh.create_box(1, 1, 1).translate([-0.5,-0.5,-0.5])
+    # pcd = mesh.sample_points_poisson_disk(64)
+    # points = torch.from_numpy(np.asarray(pcd.points)).cuda().float()
+    mesh = o3d.io.read_triangle_mesh("assets/lego/textured_cvx.stl")
+    pcd = mesh.sample_points_poisson_disk(128)
+    pcd.colors = o3d.utility.Vector3dVector(np.tile(np.asarray([0,1,0]), (len(pcd.points),1)))
+    o3d.visualization.draw_geometries([pcd])
     points = torch.from_numpy(np.asarray(pcd.points)).cuda().float()
-    gpis = GPIS()
-    gpis.fit(points, torch.zeros_like(points[:,0]).cuda().view(-1,1),noise=0.04)
-    test_mean, test_var, lb, ub = gpis.get_visualization_data([-1,-1,-1],[1,1,1],steps=100)
+    weights = torch.rand(20,128).cuda().float()
+    # normalize dimension 1
+    weights = torch.softmax(weights * 50, dim=1)
+    print(weights.sum(dim=1))
+    
+    internal_points = weights @ points
+    new_pcd = o3d.geometry.PointCloud()
+    new_pcd.points = o3d.utility.Vector3dVector(internal_points.cpu().numpy())
+    new_pcd.colors = o3d.utility.Vector3dVector(np.tile(np.asarray([1,0,0]), (len(internal_points),1)))
+    o3d.visualization.draw_geometries([pcd, new_pcd])
+    gpis = GPIS(0.08, 1)
+    externel_points = torch.tensor([[-0.1, -0.1, -0.1], [0.1, -0.1, -0.1], [-0.1, 0.1, -0.1],[0.1, 0.1, -0.1],
+                                    [-0.1, -0.1, 0.1], [0.1, -0.1, 0.1], [-0.1, 0.1, 0.1],[0.1, 0.1, 0.1]]).cuda()
+    y = torch.vstack([0.1 * torch.ones_like(externel_points[:,0]).cuda().view(-1,1),torch.zeros_like(points[:,0]).cuda().view(-1,1), 
+                      -0.1 * torch.ones_like(internal_points[:,0]).cuda().view(-1,1)])
+    print(y)
+    gpis.fit(torch.vstack([externel_points, points, internal_points]), y,noise=torch.tensor([0.3] * len(externel_points)+
+                                                                                            [0.01] * len(points) + 
+                                                                                            [0.03] * len(internal_points)).cuda())
+    test_mean, test_var, lb, ub = gpis.get_visualization_data([-0.1,-0.1,-0.1],[0.1,0.1,0.1],steps=100)
     np.savez("gpis.npz", mean=test_mean, var=test_var, ub=ub, lb=lb)
-    plt.imshow(test_mean[:,:,50], cmap="seismic", vmax=0.5, vmin=-0.5)
+    plt.imshow(test_mean[:,:,50], cmap="seismic", vmax=0.1, vmin=-0.1)
     plt.show()
 
 

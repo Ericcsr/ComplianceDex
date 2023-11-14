@@ -101,6 +101,7 @@ class LeapHand(BulletRobot):
                             for x in zip(lower_limits, upper_limits)]
 
         self.set_joint_angles(self._tuck)
+        self._uid2 = self._pb.connect(self._pb.DIRECT)
 
         self._ready = True
 
@@ -326,6 +327,14 @@ class LeapHand(BulletRobot):
         import os
         BulletRobot.add_to_models_path(os.path.dirname(
             os.path.abspath(__file__)) + "/models")
+        
+    def gravity_compensation(self):
+        """
+        :return: Joint torques for gravity compensation
+        :rtype: np.ndarray
+        """
+        return self._pb.calculateInverseDynamics(self._id, self.angles().tolist(), np.zeros(self.n_joints()).tolist(), 
+                                                 np.zeros(self.n_joints()).tolist())
 
 
 if __name__ == '__main__':

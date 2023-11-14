@@ -52,8 +52,9 @@ for i in range(0, num_steps, args.stride):
     fcolors = m.to_rgba(color_dimension)
 
     # Plot the surface.
-    surf = ax.plot_surface(X, Y, Z, cmap=cm.coolwarm, facecolors=fcolors,
-                        linewidth=0, antialiased=False)
+    print(fcolors)
+    surf = ax.plot_surface(X, Y, Z, cmap=cm.coolwarm,facecolors=fcolors,
+                        linewidth=0, antialiased=True)
     surf2 = ax.plot_surface(X, Y, np.zeros_like(Z))
 
     # Customize the z axis.
