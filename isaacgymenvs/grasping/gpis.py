@@ -122,8 +122,35 @@ class GPIS:
             test_mean[i] = mean.view(steps,steps)
             test_var[i] = var.view(steps,steps)
 
+        return test_mean.cpu().numpy(), test_var.cpu().numpy(), test_normals.cpu().numpy(), np.asarray(lb), np.asarray(ub)
+    
+    def topcd(self,test_mean, test_normal, lb, ub, steps=100):
+        lb, ub = np.asarray(lb), np.asarray(ub)
+        
+        if torch.is_tensor(test_mean):
+            test_mean = test_mean.cpu().numpy()[:,:,::-1]
+        if torch.is_tensor(test_normal):
+            test_normal = test_normal.cpu().numpy()[:,:,::-1]
+        internal = test_mean < 0.0
+        # find every point in internel that is surrounded by at least one points that is not internal
+        mask = np.zeros_like(internal)
+        for i in range(1,steps-1):
+            for j in range(1,steps-1):
+                for k in range(1,steps-1):
+                    if internal[i,j,k]:
+                        if not internal[i-1,j,k] or not internal[i+1,j,k] or not internal[i,j-1,k] or not internal[i,j+1,k] or not internal[i,j,k-1] or not internal[i,j,k+1]:
+                            mask[i,j,k] = 1
+        # get three index of each masked point
+        all_points = np.stack(np.meshgrid(np.linspace(lb[0],ub[0],steps),
+                                      np.linspace(lb[1],ub[1],steps),
+                                      np.linspace(lb[2],ub[2],steps),indexing="xy"),axis=3)
+        normals = test_normal[mask]
+        # convert index to pointcloud
+        points = all_points[mask]
+        return points, normals
 
-        return test_mean.cpu().numpy()[:,:,::-1], test_var.cpu().numpy()[:,:,::-1], test_normals.cpu().numpy()[:,:,::-1], np.asarray(lb), np.asarray(ub)
+        
+
     
     def save_state_data(self, name="gpis_state"):
         R = self.R.cpu().numpy()
@@ -183,20 +210,20 @@ if __name__ == "__main__":
 
     y = torch.vstack([0.1 * torch.ones_like(externel_points[:,0]).cuda().view(-1,1),
                       torch.zeros_like(points[mask][:,0]).cuda().view(-1,1),
-                      #torch.zeros_like(points[~mask][:,0]).cuda().view(-1,1),
+                      torch.zeros_like(points[~mask][:,0]).cuda().view(-1,1),
                       #torch.zeros_like(points[~mask][:,0]).cuda().view(-1,1),
                       #torch.zeros_like(points[~mask][:,0]).cuda().view(-1,1),
                      -0.1 * torch.ones_like(internal_points[:,0]).cuda().view(-1,1)])
     print(y)
     gpis.fit(torch.vstack([externel_points, 
                            points[mask], 
-                           #points[~mask],
+                           points[~mask],
                            #points[~mask] * torch.tensor([0.7,1,1]).cuda(),
                            #points[~mask] * torch.tensor([1.3,1,1]).cuda(),
                            internal_points]), 
                            y,noise=torch.tensor([0.3] * len(externel_points)+
                                                 [0.005] * len(points[mask]) + 
-                                                #[0.005] * len(points[~mask]) + 
+                                                [0.005] * len(points[~mask]) + 
                                                 #[0.02] * len(points[~mask]) +
                                                 #[0.02] * len(points[~mask]) +
                                                 [0.02] * len(internal_points)).double().cuda())
@@ -205,6 +232,16 @@ if __name__ == "__main__":
     gpis.save_state_data("lego_state")
     plt.imshow(test_mean[:,:,50], cmap="seismic", vmax=0.1, vmin=-0.1)
     plt.show()
+
+    points, normals = gpis.topcd(test_mean, test_normal, [-0.1,-0.1,-0.1],[0.1,0.1,0.1],steps=100)
+    fitted_pcd = o3d.geometry.PointCloud()
+    fitted_pcd.points = o3d.utility.Vector3dVector(points)
+    fitted_pcd.normals = o3d.utility.Vector3dVector(normals)
+    rec_mesh = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(fitted_pcd)[0]
+    rec_mesh.compute_vertex_normals()
+    rec_mesh.compute_triangle_normals()
+    o3d.visualization.draw_geometries([fitted_pcd])
+    o3d.visualization.draw_geometries([rec_mesh])
 
 
     # mean1,var1 = gpis.pred(torch.tensor([[-0.6,0, 0],[-0.6,0.0, 0.0]]).cuda())
