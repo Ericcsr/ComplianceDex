@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 
 class GPIS:
     def __init__(self, sigma=0.6, bias=2, kernel="tps"):
@@ -50,7 +51,7 @@ class GPIS:
         # Compute the posterior covariance
         E22 = self.kernel_function(X2, X2)
         E2 = E22 - (solved @ E12)
-        print(E2.diag())
+        #print(E2.diag())
         return (mu_2 + self.bias).squeeze(),  torch.sqrt(torch.abs(torch.diag(E2))) # prevent nan
     
     def pred2(self, X2):
@@ -114,11 +115,31 @@ class GPIS:
                                             torch.linspace(lb[1],ub[1],steps),
                                             torch.linspace(lb[2],ub[2],steps),indexing="xy"),dim=3).double().to(self.X1.device) # [steps, steps, steps, 3]
         test_mean, test_var = torch.zeros(steps,steps,steps), torch.zeros(steps,steps,steps)
+        test_normals = torch.zeros(steps,steps,steps,3)
         for i in range(steps):
             mean, var = self.pred2(test_X[i].view(-1,3)) # [steps**3]
+            test_normals[i] = self.compute_normal(test_X[i].view(-1,3)).view(steps,steps,3)
             test_mean[i] = mean.view(steps,steps)
             test_var[i] = var.view(steps,steps)
-        return test_mean.cpu().numpy(), test_var.cpu().numpy(), np.asarray(lb), np.asarray(ub)
+
+
+        return test_mean.cpu().numpy()[:,:,::-1], test_var.cpu().numpy()[:,:,::-1], test_normals.cpu().numpy()[:,:,::-1], np.asarray(lb), np.asarray(ub)
+    
+    def save_state_data(self, name="gpis_state"):
+        R = self.R.cpu().numpy()
+        X1 = self.X1.cpu().numpy()
+        y1 = self.y1.cpu().numpy()
+        E11 = self.E11.cpu().numpy()
+        np.savez(f"{name}.npz", R=R, X1=X1, y1=y1, E11=E11, bias=self.bias)
+
+    def load_state_data(self, name="gpis_state"):
+        data = np.load(f"{name}.npz")
+        self.R = torch.from_numpy(data["R"]).cuda()
+        self.X1 = torch.from_numpy(data["X1"]).cuda()
+        self.y1 = torch.from_numpy(data["y1"]).cuda()
+        self.E11 = torch.from_numpy(data["E11"]).cuda()
+        self.bias = torch.from_numpy(data["bias"]).double().cuda()
+
         
 # TODO: Need to visualize GPIS
 
@@ -137,14 +158,20 @@ if __name__ == "__main__":
     points = torch.from_numpy(np.asarray(pcd.points)).cuda().double()
     weights = torch.rand(20,128).cuda().double()
     # normalize dimension 1
-    weights = torch.softmax(weights * 50, dim=1)
+    weights = torch.softmax(weights * 20, dim=1)
     print(weights.sum(dim=1))
     
+    mask = points[:,0] > -0.0
     internal_points = weights @ points
     new_pcd = o3d.geometry.PointCloud()
     new_pcd.points = o3d.utility.Vector3dVector(internal_points.cpu().numpy())
     new_pcd.colors = o3d.utility.Vector3dVector(np.tile(np.asarray([1,0,0]), (len(internal_points),1)))
-    o3d.visualization.draw_geometries([pcd, new_pcd])
+
+    second_pcd = o3d.geometry.PointCloud()
+    second_pcd.points = o3d.utility.Vector3dVector(points[~mask].cpu().numpy() * np.array([0.7,1,1]))
+    second_pcd.colors = o3d.utility.Vector3dVector(np.tile(np.asarray([0,0,1]), (len(points[~mask]),1)))
+
+    o3d.visualization.draw_geometries([pcd, new_pcd, second_pcd])
     gpis = GPIS(0.08, 1)
     externel_points = torch.tensor([[-0.1, -0.1, -0.1], [0.1, -0.1, -0.1], [-0.1, 0.1, -0.1],[0.1, 0.1, -0.1],
                                     [-0.1, -0.1, 0.1], [0.1, -0.1, 0.1], [-0.1, 0.1, 0.1],[0.1, 0.1, 0.1],
@@ -152,16 +179,30 @@ if __name__ == "__main__":
                                     [0., 0., 0.1], [0., 0., -0.1]]).double().cuda()
     
     # Create mask for partial observed pointcloud
-    mask = points[:,0] > -1.0
+    
 
-    y = torch.vstack([0.1 * torch.ones_like(externel_points[:,0]).cuda().view(-1,1),torch.zeros_like(points[mask][:,0]).cuda().view(-1,1), 
-                      -0.1 * torch.ones_like(internal_points[:,0]).cuda().view(-1,1)])
+    y = torch.vstack([0.1 * torch.ones_like(externel_points[:,0]).cuda().view(-1,1),
+                      torch.zeros_like(points[mask][:,0]).cuda().view(-1,1),
+                      #torch.zeros_like(points[~mask][:,0]).cuda().view(-1,1),
+                      #torch.zeros_like(points[~mask][:,0]).cuda().view(-1,1),
+                      #torch.zeros_like(points[~mask][:,0]).cuda().view(-1,1),
+                     -0.1 * torch.ones_like(internal_points[:,0]).cuda().view(-1,1)])
     print(y)
-    gpis.fit(torch.vstack([externel_points, points[mask], internal_points]), y,noise=torch.tensor([0.3] * len(externel_points)+
-                                                                                            [0.001] * len(points[mask]) + 
-                                                                                            [0.03] * len(internal_points)).double().cuda())
-    test_mean, test_var, lb, ub = gpis.get_visualization_data([-0.1,-0.1,-0.1],[0.1,0.1,0.1],steps=100)
-    np.savez("gpis.npz", mean=test_mean, var=test_var, ub=ub, lb=lb)
+    gpis.fit(torch.vstack([externel_points, 
+                           points[mask], 
+                           #points[~mask],
+                           #points[~mask] * torch.tensor([0.7,1,1]).cuda(),
+                           #points[~mask] * torch.tensor([1.3,1,1]).cuda(),
+                           internal_points]), 
+                           y,noise=torch.tensor([0.3] * len(externel_points)+
+                                                [0.005] * len(points[mask]) + 
+                                                #[0.005] * len(points[~mask]) + 
+                                                #[0.02] * len(points[~mask]) +
+                                                #[0.02] * len(points[~mask]) +
+                                                [0.02] * len(internal_points)).double().cuda())
+    test_mean, test_var, test_normal, lb, ub = gpis.get_visualization_data([-0.1,-0.1,-0.1],[0.1,0.1,0.1],steps=100)
+    np.savez("gpis.npz", mean=test_mean, var=test_var, normal=test_normal, ub=ub, lb=lb)
+    gpis.save_state_data("lego_state")
     plt.imshow(test_mean[:,:,50], cmap="seismic", vmax=0.1, vmin=-0.1)
     plt.show()
 
