@@ -178,14 +178,14 @@ if __name__ == "__main__":
     # mesh = o3d.geometry.TriangleMesh.create_box(1, 1, 1).translate([-0.5,-0.5,-0.5])
     # pcd = mesh.sample_points_poisson_disk(64)
     # points = torch.from_numpy(np.asarray(pcd.points)).cuda().float()
-    mesh = o3d.io.read_triangle_mesh("assets/lego/textured_cvx.stl")
+    mesh = o3d.io.read_triangle_mesh("assets/banana/textured.obj")
     pcd = mesh.sample_points_poisson_disk(128)
     pcd.colors = o3d.utility.Vector3dVector(np.tile(np.asarray([0,1,0]), (len(pcd.points),1)))
     o3d.visualization.draw_geometries([pcd])
     points = torch.from_numpy(np.asarray(pcd.points)).cuda().double()
-    weights = torch.rand(20,128).cuda().double()
+    weights = torch.rand(5,128).cuda().double()
     # normalize dimension 1
-    weights = torch.softmax(weights * 20, dim=1)
+    weights = torch.softmax(weights * 10, dim=1)
     print(weights.sum(dim=1))
     
     mask = points[:,0] > -0.0
@@ -211,21 +211,21 @@ if __name__ == "__main__":
     y = torch.vstack([0.1 * torch.ones_like(externel_points[:,0]).cuda().view(-1,1),
                       torch.zeros_like(points[mask][:,0]).cuda().view(-1,1),
                       torch.zeros_like(points[~mask][:,0]).cuda().view(-1,1),
-                      #torch.zeros_like(points[~mask][:,0]).cuda().view(-1,1),
-                      #torch.zeros_like(points[~mask][:,0]).cuda().view(-1,1),
+                      torch.zeros_like(points[~mask][:,0]).cuda().view(-1,1),
+                      torch.zeros_like(points[~mask][:,0]).cuda().view(-1,1),
                      -0.1 * torch.ones_like(internal_points[:,0]).cuda().view(-1,1)])
     print(y)
     gpis.fit(torch.vstack([externel_points, 
                            points[mask], 
                            points[~mask],
-                           #points[~mask] * torch.tensor([0.7,1,1]).cuda(),
-                           #points[~mask] * torch.tensor([1.3,1,1]).cuda(),
+                           points[~mask] * torch.tensor([0.7,1,1]).cuda(),
+                           points[~mask] * torch.tensor([1.3,1,1]).cuda(),
                            internal_points]), 
                            y,noise=torch.tensor([0.3] * len(externel_points)+
                                                 [0.005] * len(points[mask]) + 
-                                                [0.005] * len(points[~mask]) + 
-                                                #[0.02] * len(points[~mask]) +
-                                                #[0.02] * len(points[~mask]) +
+                                                [0.02] * len(points[~mask]) + 
+                                                [0.02] * len(points[~mask]) +
+                                                [0.02] * len(points[~mask]) +
                                                 [0.02] * len(internal_points)).double().cuda())
     test_mean, test_var, test_normal, lb, ub = gpis.get_visualization_data([-0.1,-0.1,-0.1],[0.1,0.1,0.1],steps=100)
     np.savez("gpis.npz", mean=test_mean, var=test_var, normal=test_normal, ub=ub, lb=lb)
@@ -240,6 +240,7 @@ if __name__ == "__main__":
     rec_mesh = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(fitted_pcd)[0]
     rec_mesh.compute_vertex_normals()
     rec_mesh.compute_triangle_normals()
+    rec_mesh.paint_uniform_color([0.7, 0.7, 0.7])
     o3d.visualization.draw_geometries([fitted_pcd])
     o3d.visualization.draw_geometries([rec_mesh])
 

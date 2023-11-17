@@ -4,7 +4,7 @@
     <visual>
       <origin xyz="0.0 0.0 0.0"/>
       <geometry>
-        <mesh filename="textured.obj" scale="1 1 1"/>
+        <mesh filename="textured_decomp.obj" scale="1 1 1"/>
       </geometry>
       <material name="banana">
         <color rgba="0.7 0.7 0.0 1.0"/>
@@ -13,7 +13,7 @@
     <collision>
       <origin xyz="0.0 0.0 0.0"/>
       <geometry>
-        <mesh filename="decomp_textured.obj" scale="1 1 1"/>
+        <mesh filename="textured_decomp.obj" scale="1 1 1"/>
       </geometry>
     </collision>
     <inertial>

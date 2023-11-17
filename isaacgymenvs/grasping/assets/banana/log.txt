@@ -46,7 +46,7 @@ Examples:
 	 OpenCL acceleration                         1
 	 OpenCL platform ID                          0
 	 OpenCL device ID                            0
-	 output                                      decomp_textured.obj
+	 output                                      textured_decomp.obj
 	 log                                         log.txt
 + Load mesh
 + Voxelization
@@ -54,12 +54,12 @@ Examples:
 	 dim = 316	-> 800278 voxels
 	 dim = 340	-> 993715 voxels
 	 dim = 341	-> 1002345 voxels
-	 time 0.164933s
+	 time 0.133041s
 + Compute primitive set
 	 # primitives               1002345
 	 # inside surface           906190
 	 # on surface               96155
-	 time 0.00853251s
+	 time 0.00677818s
 + Approximate Convex Decomposition
 	 Subdivision level 1
 	 -> Part[0] C  = 0.366282, E  = 0.0614005, VS = 96155, VI = 906190
@@ -72,51 +72,51 @@ Examples:
 			 Best  0006 T=0.132566 C=0.117717 B=0.001648 S=0.013201 (0.0, 1.0, 0.0, -0.020)
 
 	 Subdivision level 2
-	 -> Part[0] C  = 0.0447494, E  = 0.0353155, VS = 55305, VI = 517013
+	 -> Part[0] C  = 0.0447518, E  = 0.0353155, VS = 55305, VI = 517013
 		 [Regular sampling] Number of clipping planes 90
 
-			 Best  0056 T=0.021673 C=0.019299 B=0.000172 S=0.002201 (0.0, 1.0, 0.0, 0.017)
+			 Best  0056 T=0.021673 C=0.019300 B=0.000172 S=0.002201 (0.0, 1.0, 0.0, 0.017)
 
 		 [Refining] Number of clipping planes 9
 
-			 Best  0000 T=0.021934 C=0.019599 B=0.000134 S=0.002201 (0.0, 1.0, 0.0, 0.019)
+			 Best  0000 T=0.021935 C=0.019599 B=0.000134 S=0.002201 (0.0, 1.0, 0.0, 0.019)
 
-	 -> Part[1] C  = 0.0749944, E  = 0.0301827, VS = 47267, VI = 382760
+	 -> Part[1] C  = 0.0749995, E  = 0.0301827, VS = 47267, VI = 382760
 		 [Regular sampling] Number of clipping planes 91
 
-			 Best  0028 T=0.028486 C=0.027539 B=0.000947 S=0.000000 (1.0, 0.0, 0.0, -0.014)
+			 Best  0028 T=0.028488 C=0.027541 B=0.000947 S=0.000000 (1.0, 0.0, 0.0, -0.034)
 
 		 [Refining] Number of clipping planes 9
 
-			 Best  0005 T=0.028906 C=0.027956 B=0.000950 S=0.000000 (1.0, 0.0, 0.0, -0.015)
+			 Best  0005 T=0.028909 C=0.027959 B=0.000950 S=0.000000 (1.0, 0.0, 0.0, -0.035)
 
 	 Subdivision level 3
-	 -> Part[0] C  = 0.0115495, E  = 0.0232525, VS = 36414, VI = 297177
-	 -> Part[1] C  = 0.00897702, E  = 0.0160304, VS = 25104, VI = 213623
-	 -> Part[2] C  = 0.0251905, E  = 0.0278328, VS = 43587, VI = 371855
-	 -> Part[3] C  = 0.00368542, E  = 0.00296419, VS = 4642, VI = 9943
+	 -> Part[0] C  = 0.0115496, E  = 0.0232525, VS = 36414, VI = 297177
+	 -> Part[1] C  = 0.00897701, E  = 0.0160304, VS = 25104, VI = 213623
+	 -> Part[2] C  = 0.0251977, E  = 0.0278328, VS = 43587, VI = 371855
+	 -> Part[3] C  = 0.00368544, E  = 0.00296419, VS = 4642, VI = 9943
 		 [Regular sampling] Number of clipping planes 29
 
-			 Best  0003 T=0.001802 C=0.001621 B=0.000000 S=0.000181 (1.0, 0.0, 0.0, -0.022)
+			 Best  0003 T=0.001802 C=0.001621 B=0.000000 S=0.000181 (1.0, 0.0, 0.0, -0.042)
 
 		 [Refining] Number of clipping planes 9
 
-			 Best  0002 T=0.001765 C=0.001583 B=0.000000 S=0.000181 (1.0, 0.0, 0.0, -0.021)
+			 Best  0002 T=0.001765 C=0.001583 B=0.000000 S=0.000181 (1.0, 0.0, 0.0, -0.041)
 
 	 Subdivision level 4
-	 -> Part[0] C  = 0.000528015, E  = 0.00137929, VS = 2160, VI = 3099
+	 -> Part[0] C  = 0.000527922, E  = 0.00137929, VS = 2160, VI = 3099
 	 -> Part[1] C  = 0.00109771, E  = 0.00194313, VS = 3043, VI = 6283
 + Generate 5 convex-hulls 
-	 time 4.42287s
+	 time 3.72417s
 + Merge Convex Hulls
-	 time 0.0102058s
+	 time 0.00850934s
 + Simplify 5 convex-hulls 
-		 Simplify CH[00000] 1105 V, 2206 T
-		 Simplify CH[00001] 354 V, 704 T
-		 Simplify CH[00002] 1070 V, 2136 T
+		 Simplify CH[00000] 1112 V, 2220 T
+		 Simplify CH[00001] 352 V, 700 T
+		 Simplify CH[00002] 1064 V, 2124 T
 		 Simplify CH[00003] 84 V, 164 T
 		 Simplify CH[00004] 143 V, 282 T
-	 time 0.0235206s
+	 time 0.0221549s
 + Generate output: 5 convex-hulls 
 	 CH[00000] 64 V, 124 T
 	 CH[00001] 64 V, 124 T
