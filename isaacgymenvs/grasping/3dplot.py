@@ -11,15 +11,15 @@ import matplotlib.colors as colors
 
 parser = ArgumentParser()
 parser.add_argument("--data", type=str, default="gpis.npz")
-parser.add_argument("--stride", type=int, default=1)
+parser.add_argument("--stride", type=int, default=10)
 parser.add_argument("--axis", type=str, default="z")
-parser.add_argument("--isf_limit", type=float, default=1.0)
+parser.add_argument("--isf_limit", type=float, default=0.2)
 parser.add_argument("--quiver_spacing", type=int, default=5)
 parser.add_argument("--query_point", type=float, nargs=3, default=None)
 
 args = parser.parse_args()
 
-data = np.load(args.data)
+data = np.load(f"gpis_states/{args.data}")
 test_mean = data["mean"]
 test_var = data["var"]
 test_normal = data["normal"]
@@ -59,15 +59,15 @@ for i in range(0, num_steps, args.stride):
         i = Z_index
     if args.axis == "x":
         Z = test_mean[i]
-        color_dimension = test_var[i]
+        color_dimension = np.log(test_var[i])
         normal_vec = test_normal[i]
     elif args.axis == "y":
         Z = test_mean[:,i]
-        color_dimension = test_var[:,i]
+        color_dimension = np.log(test_var[:,i])
         normal_vec = test_normal[:,i]
     else:
         Z = test_mean[:,:,i]
-        color_dimension = test_var[:,:,i]
+        color_dimension = np.log(test_var[:,:,i])
         normal_vec = test_normal[:,:,i]
     minn, maxx = color_dimension.min(), color_dimension.max()
     norm = matplotlib.colors.Normalize(minn, minn + (maxx-minn)/2)

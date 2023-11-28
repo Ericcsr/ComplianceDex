@@ -13,10 +13,10 @@ description_path = os.path.dirname(
     os.path.abspath(__file__)) + "/assets/leap_hand/robot.urdf"
 # print description_path
 
-DEFAULT_TUCK = [np.pi/9, -np.pi/6, np.pi/6, np.pi/6,
-                       np.pi/9, 0.0     , np.pi/6, np.pi/6,
-                       np.pi/9, np.pi/6 , np.pi/6, np.pi/6,
-                       np.pi/2.5, np.pi/3 , np.pi/4, np.pi/4]
+DEFAULT_TUCK = [np.pi/15, -np.pi/6, np.pi/15, np.pi/15,
+                np.pi/15, 0.0     , np.pi/15, np.pi/15,
+                np.pi/15, np.pi/6 , np.pi/15, np.pi/15,
+                np.pi/2.5, np.pi/3 , np.pi/6, np.pi/4]
 
 class LeapHand(BulletRobot):
 
