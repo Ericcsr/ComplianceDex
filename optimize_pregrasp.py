@@ -9,10 +9,6 @@ EE_OFFSETS = [[0.0, -0.04, 0.015],
            [0.0, -0.04, 0.015],
            [0.0, -0.04, 0.015],
            [0.0, -0.05, -0.015]]
-# EE_OFFSETS = [[0.0, 0.0, 0.0],
-#               [0.0, 0.0, 0.0],
-#               [0.0, 0.0, 0.0],
-#               [0.0, 0.0, 0.0]]
 
 WRIST_OFFSET = [-0.01, 0.015, 0.12]
 REF_Q = [[np.pi/6, -np.pi/9, np.pi/6, np.pi/6,
@@ -23,6 +19,30 @@ REF_Q = [[np.pi/6, -np.pi/9, np.pi/6, np.pi/6,
 z_margin = 0.02
 FINGERTIP_LB = [-0.01, 0.03, -z_margin, -0.01, -0.03, -z_margin, -0.01, -0.08, -z_margin, -0.08, -0.04, -z_margin]
 FINGERTIP_UB = [0.08,  0.08,  z_margin - 0.005,  0.08,  0.03,  z_margin - 0.005,  0.08, -0.03,  z_margin- 0.005,  0.01,  0.04,  z_margin- 0.005]
+
+COLLISION_LINKS = ["fingertip","fingertip_2","fingertip_3", "thumb_fingertip",
+                   "dip","dip_2","dip_3", "thumb_dip",
+                   "pip", "pip_2", "pip_3",
+                   "mcp_joint", "mcp_joint_2", "mcp_joint_3"]
+
+COLLISION_OFFSETS = [[0.0, -0.04, 0.015],[0.0, -0.04, 0.015],[0.0, -0.04, 0.015],[0.0, -0.05, -0.015],
+                     [0.0, -0.04, 0.015],[0.0, -0.04, 0.015],[0.0, -0.04, 0.015],[0.0, 0.02, -0.015],
+                     [0.01, 0.0, -0.01],[0.01, 0.0, -0.01],[0.01, 0.0, -0.01],
+                     [-0.02, 0.04, 0.015],[-0.02, 0.04, 0.015],[-0.02, 0.04, 0.015]]
+
+_COLLISION_PAIRS = [["fingertip", "fingertip_2"], ["fingertip", "fingertip_3"], ["fingertip", "thumb_fingertip"],["fingertip", "dip_2"], ["fingertip", "dip_3"], ["fingertip", "thumb_dip"],
+                   ["fingertip_2", "fingertip_3"], ["fingertip_2", "thumb_fingertip"], ["fingertip_2", "dip"], ["fingertip_2", "dip_3"], ["fingertip_2", "thumb_dip"],
+                   ["fingertip_3", "thumb_fingertip"], ["fingertip_3", "dip"], ["fingertip_3", "dip_2"], ["fingertip_3", "thumb_dip"],
+                   ["thumb_fingertip", "dip"], ["thumb_fingertip", "dip_2"], ["thumb_fingertip", "dip_3"],
+                   ["dip", "dip_2"], ["dip", "dip_3"], ["dip", "thumb_dip"], ["dip", "pip_2"], ["dip", "pip_3"], ["dip", "mcp_joint_2"], ["dip", "mcp_joint_3"],
+                   ["dip_2", "dip_3"], ["dip_2", "thumb_dip"], ["dip_2", "pip"], ["dip_2", "pip_3"], ["dip_2", "mcp_joint"], ["dip_2", "mcp_joint_3"],
+                   ["dip_3", "thumb_dip"], ["dip_3", "pip"], ["dip_3", "pip_2"], ["dip_3", "mcp_joint"], ["dip_3", "mcp_joint_2"],
+                   ["pip", "pip_2"], ["pip", "mcp_joint_2"],
+                   ["pip_2", "pip_3"], ["pip_2", "mcp_joint"], ["pip_2", "mcp_joint_3"],
+                   ["pip_3", "mcp_joint_2"]]
+COLLISION_PAIRS = []
+for c in _COLLISION_PAIRS:
+    COLLISION_PAIRS.append([COLLISION_LINKS.index(c[0]), COLLISION_LINKS.index(c[1])])
 
 def vis_grasp(tip_pose, target_pose):
     tip_pose = tip_pose.cpu().detach().numpy().squeeze()
@@ -604,7 +624,11 @@ class ProbabilisticGraspOptimizer:
                  pregrasp_coefficients = [[0.85,0.85,0.85,0.85],
                                           [0.80,0.80,0.80,0.80],
                                           [0.75,0.75,0.75,0.75]],
-                 pregrasp_weights = [0.1,0.8,0.1]):
+                 pregrasp_weights = [0.1,0.8,0.1],
+                 anchor_link_names = COLLISION_LINKS,
+                 anchor_link_offsets = COLLISION_OFFSETS,
+                 collision_pairs = COLLISION_PAIRS,
+                 collision_pair_threshold = 0.015):
         self.ref_q = torch.tensor(ref_q).cuda()
         self.robot_model = DifferentiableRobotModel(robot_urdf, device="cuda:0")
         self.num_iters = num_iters
@@ -615,6 +639,12 @@ class ProbabilisticGraspOptimizer:
         self.tip_bounding_box = [torch.tensor(tip_bounding_box[0]).cuda().view(-1,3), torch.tensor(tip_bounding_box[1]).cuda().view(-1,3)]
         self.pregrasp_coefficients = torch.tensor(pregrasp_coefficients).cuda()
         self.pregrasp_weights = pregrasp_weights
+        self.anchor_link_names = anchor_link_names
+        self.anchor_link_offsets = anchor_link_offsets
+        collision_pairs = torch.tensor(collision_pairs).long().cuda()
+        self.collision_pair_left = collision_pairs[:,0]
+        self.collision_pair_right = collision_pairs[:,1]
+        self.collision_pair_threshold = collision_pair_threshold
 
     def forward_kinematics(self, joint_angles):
         """
@@ -624,6 +654,20 @@ class ProbabilisticGraspOptimizer:
         tip_poses = self.robot_model.compute_forward_kinematics(joint_angles, self.ee_link_names,
                                                                 offsets=self.ee_link_offsets, recursive=True)[0].view(-1,3) + self.palm_offset
         return tip_poses
+    
+    def compute_collision_loss(self, joint_angles):
+        # Should only work when number of environment is 1
+        assert joint_angles.shape[0] == 1
+        anchor_pose = self.robot_model.compute_forward_kinematics(joint_angles, 
+                                                                  self.anchor_link_names, 
+                                                                  offsets=self.anchor_link_offsets, 
+                                                                  recursive=True)[0].view(-1,3)
+        collision_pair_left = anchor_pose[self.collision_pair_left]
+        collision_pair_right = anchor_pose[self.collision_pair_right]
+        dist = torch.norm(collision_pair_left - collision_pair_right, dim=1) # [num_collision_pairs]
+        mask = dist < self.collision_pair_threshold
+        cost = (dist - self.collision_pair_threshold)[mask].sum() * 1000.0
+        return cost
     
     def compute_loss(self, all_tip_pose, target_pose, compliance, friction_mu, gpis):
         dist, var = gpis.pred(all_tip_pose)
@@ -684,6 +728,7 @@ class ProbabilisticGraspOptimizer:
                 total_margin += self.pregrasp_weights[i] * margin
             pre_dist, _ = gpis.pred(pregrasp_tip_pose.view(-1,3))
             total_loss -= pre_dist.view(pregrasp_tip_pose.shape[0], pregrasp_tip_pose.shape[1]).sum(dim=1) * 5.0 # NOTE: Experimental
+            total_loss += self.compute_collision_loss(joint_angles) # NOTE: Experimental
             total_loss.sum().backward()
             print(f"Step {s} Loss:",float(total_loss.sum()))
             if torch.isnan(total_loss.sum()):
