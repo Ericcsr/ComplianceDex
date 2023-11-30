@@ -4,7 +4,7 @@ from torchsdf import compute_sdf
 from gpis import GPIS
 import torch
 from differentiable_robot_model.robot_model import DifferentiableRobotModel
-from wrench_closure import solve_minimum_wrench
+from wrench_closure import minimum_wrench_reward
 
 
 EE_OFFSETS = [[0.0, -0.04, 0.015],
@@ -127,6 +127,7 @@ def force_eq_reward(tip_pose, target_pose, compliance, friction_mu, current_norm
     force_norm = force.norm(dim=2)
     reward = torch.log(margin+1).sum(dim=1)
     return reward , margin, force_norm
+    
 
 class KinGraspOptimizer:
     def __init__(self, 
@@ -476,143 +477,97 @@ class KinGPISGraspOptimizer:
                 target_pose.clamp_(min=self.tip_bounding_box[0], max=self.tip_bounding_box[1])
         print(opt_margin, normal)
         return opt_joint_angle, opt_compliance, opt_target_pose
-
-class SphericalGraspOptimizer:
-    def __init__(self, tip_bounding_box, num_iters=200, optimize_target=False):
-        """
-        tip_bounding_box: [lb [num_finger, 3], ub [num_finger, 3]]
-        """
-        self.tip_bounding_box = [torch.tensor(tip_bounding_box[0]).cuda().view(-1,3), torch.tensor(tip_bounding_box[1]).cuda().view(-1,3)]
-        self.num_iters = num_iters
-        self.optimize_target = optimize_target
-        self.device = "cuda:0"
-
-    def get_spherical_mapping(self, init_pose, target_pose, requires_grad=True):
-        """
-        :params: init_pose: initial tip pose [num_envs, num_fingers, 3]
-        :params: target_pose: target tip pose [num_envs, num_fingers, 3]
-        :return: thetas: rotation along y axis [num_envs, num_fingers]
-        :return: phis: rotation along z axis [num_envs, num_fingers]
-        :return: rs: distance between init and target [num_envs, num_fingers]
-        """
-        delta_pose = init_pose - target_pose
-        rs = delta_pose.norm(dim=2)
-        thetas = torch.acos(delta_pose[:,:,2] / rs)
-        phis = torch.atan2(delta_pose[:,:,1], delta_pose[:,:,0])
-        return thetas.requires_grad_(requires_grad), phis.requires_grad_(requires_grad), rs.requires_grad_(requires_grad)
     
-    def get_cartesian_mapping(self, thetas, phis, rs, target_pose, p=[1.0]):
-        """
-        NOTE: Should be fully differentiable
-        map spherical coordinate back to cartesian coordinate
-        :params: thetas: [num_envs, num_fingers] angle between the vector and z axis
-        :params: phis: [num_envs, num_fingers] angle between projection of the vector and x axis
-        :params: rs: [num_envs, num_fingers]
-        :params: target_pose: [num_envs, num_fingers, 3]
-        :params: p: list, fractional indexing parameter target_pose + rs * p
-        :return: new_pose: [num_envs, num_samples, num_fingers, 3]
-        """
-        if p is None:
-            num_samples = self.num_samples
-            p = self.samples_p.view(1, num_samples, 1)
-        else:
-            num_samples = len(p)
-            p = torch.tensor(p, device=self.device).float().view(1, num_samples, 1)
-        rs = rs.unsqueeze(1).repeat(1, num_samples,1)
-        thetas = thetas.unsqueeze(1)
-        phis = phis.unsqueeze(1)
-        new_pose = torch.stack([p * rs * torch.sin(thetas) * torch.cos(phis),
-                                p * rs * torch.sin(thetas) * torch.sin(phis),
-                                p * rs * torch.cos(thetas)], dim= 3) + target_pose.unsqueeze(1)
-        return new_pose.squeeze(1)
+class WCKinGPISGraspOptimizer:
+    def __init__(self, 
+                 robot_urdf, 
+                 ee_link_names=["fingertip","fingertip_2","fingertip_3", "thumb_fingertip"],
+                 ee_link_offsets = EE_OFFSETS,
+                 palm_offset=WRIST_OFFSET,
+                 num_iters=1000,
+                 ref_q=REF_Q,
+                 tip_bounding_box=[FINGERTIP_LB, FINGERTIP_UB]):
+        self.ref_q = torch.tensor(ref_q).cuda()
+        self.robot_model = DifferentiableRobotModel(robot_urdf, device="cuda:0")
+        self.num_iters = num_iters
+        self.ee_link_names = ee_link_names
+        self.ee_link_offsets = ee_link_offsets
+        self.palm_offset = torch.tensor(palm_offset).double().cuda()
+        self.tip_bounding_box = [torch.tensor(tip_bounding_box[0]).cuda().view(-1,3), torch.tensor(tip_bounding_box[1]).cuda().view(-1,3)]
 
-    def create_rs_bounding_box(self,thetas, phis, target_pose):
+    def forward_kinematics(self, joint_angles):
         """
-        NOTE: Assume work in torch.no_grad()
-        :params: thetas: [num_envs, num_fingers] angle between the vector and z axis
-        :params: phis: [num_envs, num_fingers] angle between the vector and x axis
-        :params: target_pose: [num_envs, num_fingers, 3]
-        :return: rs_ub: [num_envs, num_fingers] bounding boxes
+        :params: joint_angles: [num_envs, num_dofs]
+        :return: tip_poses: [num_envs * num_fingers, 3]
         """
-        delta_pose = self.get_cartesian_mapping(thetas, phis, torch.ones_like(thetas).float().cuda(), target_pose)
-        dummy_tip_pose = (delta_pose + target_pose).clamp(min=self.tip_bounding_box[0], max=self.tip_bounding_box[1])
-        delta_clamped = dummy_tip_pose - target_pose
-        return delta_clamped.norm(dim=2) / delta_pose.norm(dim=2)
-
-    def optimize(self, tip_pose, target_pose, compliance, friction_mu, gpis):
+        tip_poses = self.robot_model.compute_forward_kinematics(joint_angles, self.ee_link_names,
+                                                                offsets=self.ee_link_offsets, recursive=True)[0].view(-1,3) + self.palm_offset
+        return tip_poses.view(-1,3)
+    
+    def optimize(self, joint_angles, target_pose, compliance, friction_mu, gpis):
         """
         NOTE: scale matters in running optimization, need to normalize the scale
-        TODO: Add a penalty term to encourage target pose stay inside the object.
         Params:
-        tip_pose: [num_envs, num_fingers, 3]
+        joint_angles: [num_envs, num_dofs]
         target_pose: [num_envs, num_fingers, 3]
         compliance: [num_envs, num_fingers]
+        opt_mask: [num_envs, num_fingers]
         """
-        thetas, phis, rs = self.get_spherical_mapping(tip_pose, target_pose)
+        joint_angles = joint_angles.clone().requires_grad_(True)
         compliance = compliance.clone().requires_grad_(True)
-        if self.optimize_target:
-            target_pose = target_pose.clone().requires_grad_(True)
-            optim = torch.optim.RMSprop([{"params":thetas, "lr":5e-4},
-                                         {"params":phis, "lr":5e-4},
-                                         {"params":rs, "lr":1e-3},
-                                        {"params":target_pose, "lr":1e-3}, 
+        optim = torch.optim.RMSprop([{"params":joint_angles, "lr":1e-2}, # Directly optimizing joint angles can result in highly non-linear manifold..
                                         {"params":compliance, "lr":0.2}])
-        else:
-            optim = torch.optim.RMSprop([{"params":thetas, "lr":5e-4},
-                                         {"params":phis, "lr":5e-4},
-                                         {"params":rs, "lr":1e-3},
-                                        {"params":compliance, "lr":0.2}])
-        opt_thetas = thetas.clone()
-        opt_phis = phis.clone()
-        opt_rs = rs.clone()
+        opt_joint_angle = joint_angles.clone()
         opt_compliance = compliance.clone()
         opt_target_pose = target_pose.clone()
-        opt_value = torch.inf * torch.ones(tip_pose.shape[0]).cuda()
+        opt_value = torch.inf * torch.ones(joint_angles.shape[0]).double().cuda()
         normal = None
+        opt_margin = None
         for _ in range(self.num_iters):
             optim.zero_grad()
-            all_tip_pose = self.get_cartesian_mapping(thetas, phis, rs, target_pose).view(-1,3)
+            all_tip_pose = self.forward_kinematics(joint_angles)
             dist, var = gpis.pred(all_tip_pose)
             tar_dist, _ = gpis.pred(target_pose.view(-1,3))
             current_normal = gpis.compute_normal(all_tip_pose)
-            task_reward, margin, force_norm = force_eq_reward(tip_pose, 
-                                target_pose, 
-                                compliance, 
-                                friction_mu, 
-                                current_normal.view(tip_pose.shape[0], tip_pose.shape[1], tip_pose.shape[2]))
-            c = -task_reward * 5.0
-            center_tip = tip_pose.mean(dim=1)
+            task_cost, margin, forces = minimum_wrench_reward(all_tip_pose.view(-1,3), 
+                                                              current_normal.view(-1,3), 
+                                                              friction_mu)
+            force_norm = forces.norm(dim=1).view(target_pose.shape[0], target_pose.shape[1])
+            forces = forces.view(target_pose.shape[0], target_pose.shape[1], 3)
+            # task_reward, margin, force_norm = force_eq_reward(all_tip_pose.view(target_pose.shape), 
+            #                     target_pose, 
+            #                     compliance, 
+            #                     friction_mu, 
+            #                     current_normal.view(target_pose.shape))
+            c = task_cost * 5.0
+            center_tip = all_tip_pose.view(target_pose.shape).mean(dim=1)
             center_target = target_pose.mean(dim=1)
-            force_cost = -(force_norm * torch.nn.functional.softmin(force_norm,dim=1)).clamp(max=10.0).sum(dim=1)
+            force_cost = -(force_norm * torch.nn.functional.softmin(force_norm,dim=1)).clamp(max=1.0).sum(dim=1)
             center_cost = (center_tip - center_target).norm(dim=1) * 10.0
-
-            dist_cost = 1000 * torch.abs(dist).view(tip_pose.shape[0], tip_pose.shape[1]).sum(dim=1)
-            tar_dist_cost = 10 * tar_dist.view(tip_pose.shape[0], tip_pose.shape[1]).sum(dim=1)
-            variance_cost = 10 * var.view(tip_pose.shape[0], tip_pose.shape[1]).sum(dim=1)
-            l = c + dist_cost + tar_dist_cost + center_cost + force_cost + variance_cost # Encourage target pose to stay inside the object
+            ref_cost = (joint_angles - self.ref_q).norm(dim=1) * 20.0
+            variance_cost = 20 * torch.log(100 * var).view(tip_pose.shape[0], tip_pose.shape[1])
+            dist_cost = 1000 * torch.abs(dist).view(target_pose.shape[0], target_pose.shape[1]).sum(dim=1)
+            tar_dist_cost = 10 * tar_dist.view(target_pose.shape[0], target_pose.shape[1]).sum(dim=1)
+            l = c + dist_cost + tar_dist_cost + center_cost + force_cost + ref_cost + variance_cost.max(dim=1)[0] # Encourage target pose to stay inside the object
             l.sum().backward()
-            print("Loss:",float(l.sum()), float(force_cost.sum()), float(center_cost.sum()), float(dist_cost.sum()), float(tar_dist_cost.sum()), float(variance_cost.sum()))
+            print("Loss:",float(l.sum()), float(task_cost))
             if torch.isnan(l.sum()):
-                print("Loss NaN trace:",dist, tip_pose, target_pose, margin)
+                print(dist, all_tip_pose, margin)
             with torch.no_grad():
                 update_flag = l < opt_value
                 if update_flag.sum():
                     normal = current_normal
+                    opt_margin = margin
                     opt_value[update_flag] = l[update_flag]
-                    opt_phis[update_flag] = phis[update_flag]
-                    opt_thetas[update_flag] = thetas[update_flag]
-                    opt_rs[update_flag] = rs[update_flag]
-                    opt_target_pose[update_flag] = target_pose[update_flag]
+                    opt_joint_angle[update_flag] = joint_angles[update_flag]
+                    opt_target_pose[update_flag] = all_tip_pose.view(target_pose.shape)[update_flag] + forces[update_flag] / compliance[update_flag].unsqueeze(2)
                     opt_compliance[update_flag] = compliance[update_flag]
             optim.step()
             with torch.no_grad(): # apply bounding box constraints
+                compliance.clamp_(min=40.0) # prevent negative compliance
                 target_pose.clamp_(min=self.tip_bounding_box[0], max=self.tip_bounding_box[1])
-                compliance.clamp_(min=10.0)
-                # Only clip rs
-                rs_ub = self.create_rs_bounding_box(thetas, phis, target_pose)
-                rs.clamp_(min=torch.zeros_like(rs_ub), max=rs_ub)
-        print(margin, normal)
-        return self.get_cartesian_mapping(opt_thetas, opt_phis, opt_rs, opt_target_pose), opt_compliance, opt_target_pose
+        print(opt_margin, normal)
+        return opt_joint_angle, opt_compliance, opt_target_pose
 
 class ProbabilisticGraspOptimizer:
     def __init__(self, 
@@ -817,6 +772,14 @@ if __name__ == "__main__":
         #init_tip_pose = grasp_optimizer.forward_kinematics(joint_angles).view(1,-1,3)
         joint_angles, opt_compliance, opt_target_pose = grasp_optimizer.optimize(joint_angles,target_pose, compliance, friction_mu, gpis)
         opt_tip_pose = grasp_optimizer.forward_kinematics(joint_angles).view(1,-1, 3)
+    elif args.mode == "wc":
+        grasp_optimizer = WCKinGPISGraspOptimizer(robot_urdf, 
+                                                tip_bounding_box=[FINGERTIP_LB, FINGERTIP_UB], 
+                                                num_iters=args.num_iters,
+                                                palm_offset=[WRIST_OFFSET[0]+args.wrist_x,WRIST_OFFSET[1]+args.wrist_y,WRIST_OFFSET[2]+args.wrist_z])
+        #init_tip_pose = grasp_optimizer.forward_kinematics(joint_angles).view(1,-1,3)
+        joint_angles, opt_compliance, opt_target_pose = grasp_optimizer.optimize(joint_angles,target_pose, compliance, friction_mu, gpis)
+        opt_tip_pose = grasp_optimizer.forward_kinematics(joint_angles).view(1,-1, 3)
     elif args.mode == "prob":
         grasp_optimizer = ProbabilisticGraspOptimizer(robot_urdf, 
                                                 tip_bounding_box=[FINGERTIP_LB, FINGERTIP_UB], 
@@ -829,13 +792,11 @@ if __name__ == "__main__":
         grasp_optimizer = SDFGraspOptimizer(tip_bounding_box=[FINGERTIP_LB, FINGERTIP_UB], optimize_target=True, num_iters=args.num_iters)
     elif args.mode == "gpis":
         grasp_optimizer = GPISGraspOptimizer(tip_bounding_box=[FINGERTIP_LB, FINGERTIP_UB], optimize_target=True, num_iters=args.num_iters)
-    elif args.mode == "spherical":
-        grasp_optimizer = SphericalGraspOptimizer(tip_bounding_box=[FINGERTIP_LB, FINGERTIP_UB], optimize_target=True, num_iters=args.num_iters)
     
     
     if args.mode == "sdf":
         opt_tip_pose, opt_compliance, opt_target_pose = grasp_optimizer.optimize(tip_pose, target_pose, compliance, friction_mu, mesh)
-    elif args.mode not in ["kingpis", "prob"]:
+    elif args.mode not in ["kingpis", "prob", "wc"]:
         opt_tip_pose, opt_compliance, opt_target_pose = grasp_optimizer.optimize(tip_pose, target_pose, compliance, friction_mu, gpis)
 
     # Visualize target and tip pose
