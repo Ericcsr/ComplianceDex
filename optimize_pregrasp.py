@@ -4,6 +4,8 @@ from torchsdf import compute_sdf
 from gpis import GPIS
 import torch
 from differentiable_robot_model.robot_model import DifferentiableRobotModel
+from wrench_closure import solve_minimum_wrench
+
 
 EE_OFFSETS = [[0.0, -0.04, 0.015],
            [0.0, -0.04, 0.015],
@@ -678,6 +680,7 @@ class ProbabilisticGraspOptimizer:
                             compliance, 
                             friction_mu, 
                             current_normal.view(target_pose.shape))
+
         c = -task_reward * 25.0
         center_tip = all_tip_pose.view(target_pose.shape).mean(dim=1)
         center_target = target_pose.mean(dim=1)
@@ -845,4 +848,3 @@ if __name__ == "__main__":
     np.save(f"data/target_{args.exp_name}.npy", target_pose.cpu().detach().numpy().squeeze())
     np.save(f"data/compliance_{args.exp_name}.npy", compliance.cpu().detach().numpy().squeeze())
     np.save(f"data/joint_angle_{args.exp_name}.npy", joint_angles.cpu().detach().numpy().squeeze())
-    
