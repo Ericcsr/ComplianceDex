@@ -17,7 +17,7 @@ object_dict = {
 }
 
 class LeapHandValidator:
-    def __init__(self, pb_client, object_urdf, init_object_pose, uid, friction=2.0, visualize_tip=True, floor_offset=0.0):
+    def __init__(self, pb_client, object_urdf, init_object_pose, uid, friction=2, visualize_tip=True, floor_offset=0.0):
         self._pb = pb_client
         self.robot = LeapHand(self._pb,uid=uid)
         self.base_position = init_object_pose[0:3]
@@ -82,7 +82,7 @@ class LeapHandValidator:
         for i in range(100):
             pb.stepSimulation()
             time.sleep(0.001)
-        for i in range(200):
+        for i in range(300):
             self.control_finger(tip_pose)
             time.sleep(0.001)
         input("Press Enter to continue...")

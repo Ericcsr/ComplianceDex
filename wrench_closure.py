@@ -3,7 +3,7 @@ import torch
 import numpy as np
 from cvxpylayers.torch import CvxpyLayer
 
-def solve_minimum_wrench(tip_poses, contact_normals, mu):
+def solve_minimum_wrench(tip_poses, contact_normals, mu, min_force=5.0):
     """
     tip_poses: (N, 3)
     contact_normals: (N, 3)
@@ -21,7 +21,7 @@ def solve_minimum_wrench(tip_poses, contact_normals, mu):
     R = torch.stack(Rs)
 
     constraints = [ns[i] @ F[i] <= -np.sqrt(1/(1+mu**2)) * cp.pnorm(F[i]) for i in range(r.shape[0])]
-    constraints = [ns[i] @ F[i] <= -1 for i in range(r.shape[0])] + constraints
+    constraints = [ns[i] @ F[i] <= -min_force for i in range(r.shape[0])] + constraints
 
     objective = cp.Minimize(0.5 * cp.pnorm(F[0]+F[1]+F[2]+F[3], p=2) + 
                             0.5 * cp.pnorm(Rp[0]@F[0]+Rp[1]@F[1]+Rp[2]@F[2]+Rp[3]@F[3], p=2))
@@ -32,17 +32,17 @@ def solve_minimum_wrench(tip_poses, contact_normals, mu):
     solution = layer(*contact_normals, *R, solver_args={"eps": 1e-8})[0]
     total_force = solution.sum(dim=0)
     total_torque = torch.cross(r, solution).sum(dim=0)
-    return solution, total_force+total_torque
+    return solution, total_force.norm()+total_torque.norm()
 
-def minimum_wrench_reward(tip_pose, contact_normals, mu):
+def minimum_wrench_reward(tip_pose, contact_normals, mu, min_force):
     """
     tip_pose: (N, 3)
     contact_normals: (N, 3)
     mu: scalar
     """
-    forces, total_wrench = solve_minimum_wrench(tip_pose, contact_normals, mu)
+    forces, total_wrench = solve_minimum_wrench(tip_pose, contact_normals, mu, min_force)
     margin = compute_margin(forces, contact_normals, mu)
-    return total_wrench.sum(), margin.unsqueeze(0), forces
+    return total_wrench, margin.unsqueeze(0), forces
 
 def compute_margin(forces, normals, mu):
     """

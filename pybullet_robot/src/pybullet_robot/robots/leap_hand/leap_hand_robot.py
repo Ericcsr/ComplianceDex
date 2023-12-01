@@ -16,7 +16,7 @@ description_path = os.path.dirname(
 DEFAULT_TUCK = [np.pi/15, -np.pi/6, np.pi/15, np.pi/15,
                 np.pi/15, 0.0     , np.pi/15, np.pi/15,
                 np.pi/15, np.pi/6 , np.pi/15, np.pi/15,
-                np.pi/2.5, np.pi/3 , np.pi/6, np.pi/4]
+                np.pi/15, np.pi/6 , np.pi/9, np.pi/9]
 
 class LeapHand(BulletRobot):
 

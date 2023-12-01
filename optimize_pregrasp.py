@@ -13,10 +13,10 @@ EE_OFFSETS = [[0.0, -0.04, 0.015],
            [0.0, -0.05, -0.015]]
 
 WRIST_OFFSET = [-0.01, 0.015, 0.12]
-REF_Q = [[np.pi/6, -np.pi/9, np.pi/6, np.pi/6,
-          np.pi/6, 0.0     , np.pi/6, np.pi/6,
-          np.pi/6, np.pi/9 , np.pi/6, np.pi/6,
-          np.pi/3, np.pi/4 , np.pi/6, np.pi/6]]
+REF_Q = [[np.pi/15, -np.pi/6, np.pi/15, np.pi/15,
+          np.pi/15, 0.0     , np.pi/15, np.pi/15,
+          np.pi/15, np.pi/6 , np.pi/15, np.pi/15,
+          np.pi/15, np.pi/6 , np.pi/9, np.pi/9]]
 
 z_margin = 0.02
 FINGERTIP_LB = [-0.01, 0.03, -z_margin, -0.01, -0.03, -z_margin, -0.01, -0.08, -z_margin, -0.08, -0.04, -z_margin]
@@ -32,16 +32,19 @@ COLLISION_OFFSETS = [[0.0, -0.04, 0.015],[0.0, -0.04, 0.015],[0.0, -0.04, 0.015]
                      [0.01, 0.0, -0.01],[0.01, 0.0, -0.01],[0.01, 0.0, -0.01],
                      [-0.02, 0.04, 0.015],[-0.02, 0.04, 0.015],[-0.02, 0.04, 0.015]]
 
-_COLLISION_PAIRS = [["fingertip", "fingertip_2"], ["fingertip", "fingertip_3"], ["fingertip", "thumb_fingertip"],["fingertip", "dip_2"], ["fingertip", "dip_3"], ["fingertip", "thumb_dip"],
-                   ["fingertip_2", "fingertip_3"], ["fingertip_2", "thumb_fingertip"], ["fingertip_2", "dip"], ["fingertip_2", "dip_3"], ["fingertip_2", "thumb_dip"],
-                   ["fingertip_3", "thumb_fingertip"], ["fingertip_3", "dip"], ["fingertip_3", "dip_2"], ["fingertip_3", "thumb_dip"],
-                   ["thumb_fingertip", "dip"], ["thumb_fingertip", "dip_2"], ["thumb_fingertip", "dip_3"],
-                   ["dip", "dip_2"], ["dip", "dip_3"], ["dip", "thumb_dip"], ["dip", "pip_2"], ["dip", "pip_3"], ["dip", "mcp_joint_2"], ["dip", "mcp_joint_3"],
-                   ["dip_2", "dip_3"], ["dip_2", "thumb_dip"], ["dip_2", "pip"], ["dip_2", "pip_3"], ["dip_2", "mcp_joint"], ["dip_2", "mcp_joint_3"],
-                   ["dip_3", "thumb_dip"], ["dip_3", "pip"], ["dip_3", "pip_2"], ["dip_3", "mcp_joint"], ["dip_3", "mcp_joint_2"],
-                   ["pip", "pip_2"], ["pip", "mcp_joint_2"],
-                   ["pip_2", "pip_3"], ["pip_2", "mcp_joint"], ["pip_2", "mcp_joint_3"],
-                   ["pip_3", "mcp_joint_2"]]
+# _COLLISION_PAIRS = [["fingertip", "fingertip_2"], ["fingertip", "fingertip_3"], ["fingertip", "thumb_fingertip"],["fingertip", "dip_2"], ["fingertip", "dip_3"], ["fingertip", "thumb_dip"],
+#                    ["fingertip_2", "fingertip_3"], ["fingertip_2", "thumb_fingertip"], ["fingertip_2", "dip"], ["fingertip_2", "dip_3"], ["fingertip_2", "thumb_dip"],
+#                    ["fingertip_3", "thumb_fingertip"], ["fingertip_3", "dip"], ["fingertip_3", "dip_2"], ["fingertip_3", "thumb_dip"],
+#                    ["thumb_fingertip", "dip"], ["thumb_fingertip", "dip_2"], ["thumb_fingertip", "dip_3"],
+#                    ["dip", "dip_2"], ["dip", "dip_3"], ["dip", "thumb_dip"], ["dip", "pip_2"], ["dip", "pip_3"], ["dip", "mcp_joint_2"], ["dip", "mcp_joint_3"],
+#                    ["dip_2", "dip_3"], ["dip_2", "thumb_dip"], ["dip_2", "pip"], ["dip_2", "pip_3"], ["dip_2", "mcp_joint"], ["dip_2", "mcp_joint_3"],
+#                    ["dip_3", "thumb_dip"], ["dip_3", "pip"], ["dip_3", "pip_2"], ["dip_3", "mcp_joint"], ["dip_3", "mcp_joint_2"],
+#                    ["pip", "pip_2"], ["pip", "mcp_joint_2"],
+#                    ["pip_2", "pip_3"], ["pip_2", "mcp_joint"], ["pip_2", "mcp_joint_3"],
+#                    ["pip_3", "mcp_joint_2"]]
+_COLLISION_PAIRS = [["fingertip", "fingertip_2"], ["fingertip", "fingertip_3"], ["fingertip", "thumb_fingertip"],
+                    ["fingertip_2", "fingertip_3"], ["fingertip_2", "thumb_fingertip"],
+                    ["fingertip_3", "thumb_fingertip"]]
 COLLISION_PAIRS = []
 for c in _COLLISION_PAIRS:
     COLLISION_PAIRS.append([COLLISION_LINKS.index(c[0]), COLLISION_LINKS.index(c[1])])
@@ -77,13 +80,17 @@ def optimal_transformation_batch(S1, S2, weight):
     H = (weight * (S1 - c1)).transpose(1,2) @ (weight * (S2 - c2))
     U, _, Vh = torch.linalg.svd(H + 1e-6*torch.rand_like(H))
     V = Vh.mH
-    R = V @ U.transpose(1,2)
+    R_ = V @ U.transpose(1,2)
+    mask = R_.det() < 0.0
+    sign = torch.ones(R_.shape[0], 3, 3).cuda()
+    sign[mask,:, -1] *= -1.0
+    R = (V*sign) @ U.transpose(1,2)
     t = (weight * (S2 - (R@S1.transpose(1,2)).transpose(1,2))).sum(dim=1) / weight.sum(dim=1)
     return R, t
 
 # Assume friction is uniform
 # Differentiable 
-def force_eq_reward(tip_pose, target_pose, compliance, friction_mu, current_normal, mass=0.4, gravity=None, M=1.0, COM=None):
+def force_eq_reward(tip_pose, target_pose, compliance, friction_mu, current_normal, mass=0.4, gravity=None, M=2.0, COM=[0.0, 0.1, 0.0]):
     """
     Params:
     tip_pose: world frame [num_envs, num_fingers, 3]
@@ -97,6 +104,8 @@ def force_eq_reward(tip_pose, target_pose, compliance, friction_mu, current_norm
     """
     # Prepare dummy gravity
     # Assume COM is at center of target
+    if COM is not None:
+        COM = torch.tensor(COM).cuda().double()
     if gravity is not None:
         dummy_tip = torch.zeros(tip_pose.shape[0], 1, 3).cuda()
         dummy_tip[:,0,:] = target_pose.mean(dim=1) if COM is None else COM
@@ -486,7 +495,8 @@ class WCKinGPISGraspOptimizer:
                  palm_offset=WRIST_OFFSET,
                  num_iters=1000,
                  ref_q=REF_Q,
-                 tip_bounding_box=[FINGERTIP_LB, FINGERTIP_UB]):
+                 tip_bounding_box=[FINGERTIP_LB, FINGERTIP_UB],
+                 min_force = 5.0):
         self.ref_q = torch.tensor(ref_q).cuda()
         self.robot_model = DifferentiableRobotModel(robot_urdf, device="cuda:0")
         self.num_iters = num_iters
@@ -494,6 +504,7 @@ class WCKinGPISGraspOptimizer:
         self.ee_link_offsets = ee_link_offsets
         self.palm_offset = torch.tensor(palm_offset).double().cuda()
         self.tip_bounding_box = [torch.tensor(tip_bounding_box[0]).cuda().view(-1,3), torch.tensor(tip_bounding_box[1]).cuda().view(-1,3)]
+        self.min_force = min_force
 
     def forward_kinematics(self, joint_angles):
         """
@@ -531,7 +542,7 @@ class WCKinGPISGraspOptimizer:
             current_normal = gpis.compute_normal(all_tip_pose)
             task_cost, margin, forces = minimum_wrench_reward(all_tip_pose.view(-1,3), 
                                                               current_normal.view(-1,3), 
-                                                              friction_mu)
+                                                              friction_mu, min_force=self.min_force)
             force_norm = forces.norm(dim=1).view(target_pose.shape[0], target_pose.shape[1])
             forces = forces.view(target_pose.shape[0], target_pose.shape[1], 3)
             # task_reward, margin, force_norm = force_eq_reward(all_tip_pose.view(target_pose.shape), 
@@ -578,14 +589,14 @@ class ProbabilisticGraspOptimizer:
                  num_iters=1000, optimize_target=False,
                  ref_q=REF_Q,
                  tip_bounding_box=[FINGERTIP_LB, FINGERTIP_UB],
-                 pregrasp_coefficients = [[0.85,0.85,0.85,0.85],
-                                          [0.80,0.80,0.80,0.80],
-                                          [0.75,0.75,0.75,0.75]],
+                 pregrasp_coefficients = [[0.80,0.80,0.80,0.80],
+                                          [0.75,0.75,0.75,0.75],
+                                          [0.70,0.70,0.70,0.70]],
                  pregrasp_weights = [0.1,0.8,0.1],
                  anchor_link_names = COLLISION_LINKS,
                  anchor_link_offsets = COLLISION_OFFSETS,
                  collision_pairs = COLLISION_PAIRS,
-                 collision_pair_threshold = 0.015):
+                 collision_pair_threshold = 0.04):
         self.ref_q = torch.tensor(ref_q).cuda()
         self.robot_model = DifferentiableRobotModel(robot_urdf, device="cuda:0")
         self.num_iters = num_iters
@@ -623,7 +634,7 @@ class ProbabilisticGraspOptimizer:
         collision_pair_right = anchor_pose[self.collision_pair_right]
         dist = torch.norm(collision_pair_left - collision_pair_right, dim=1) # [num_collision_pairs]
         mask = dist < self.collision_pair_threshold
-        cost = (dist - self.collision_pair_threshold)[mask].sum() * 1000.0
+        cost = (1/dist)[mask].sum() * 1000.0
         return cost
     
     def compute_loss(self, all_tip_pose, target_pose, compliance, friction_mu, gpis):
@@ -634,7 +645,9 @@ class ProbabilisticGraspOptimizer:
                             target_pose, 
                             compliance, 
                             friction_mu, 
-                            current_normal.view(target_pose.shape))
+                            current_normal.view(target_pose.shape),
+                            mass=0.2,
+                            gravity=10.0)
 
         c = -task_reward * 25.0
         center_tip = all_tip_pose.view(target_pose.shape).mean(dim=1)
@@ -741,7 +754,10 @@ if __name__ == "__main__":
     #torch.manual_seed(0)
     target_pose = rand_n * torch.tensor(FINGERTIP_LB).view(-1,3) + (1 - rand_n) * torch.tensor(FINGERTIP_UB).view(-1,3).double()
     target_pose = 0.2 * target_pose.unsqueeze(0).cuda()
-    compliance = torch.tensor([[10.0,10.0,10.0,20.0]]).cuda()
+    if args.mode == "wc":
+        compliance = torch.tensor([[200.0,200.0,200.0,400.0]]).cuda()
+    else:
+        compliance = torch.tensor([[10.0,10.0,10.0,20.0]]).cuda()
     # mesh = o3d.io.read_triangle_mesh("assets/hammer/textured.stl")
     # pcd = o3d.io.read_point_cloud("assets/hammer/nontextured.ply")
     # tip_pose = torch.tensor([[[0.04,0.06, 0.02],[0.04,-0.0, -0.01],[0.04,-0.02,0.0],[-0.04,-0.0, 0.01]]]).cuda()
