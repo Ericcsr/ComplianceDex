@@ -105,6 +105,9 @@ class LeapHand(BulletRobot):
 
         self._ready = True
 
+    def reset(self):
+        self.set_joint_angles(self._tuck)
+
     def exec_position_cmd(self, cmd):
         """
         Execute position command. Use for position controlling.

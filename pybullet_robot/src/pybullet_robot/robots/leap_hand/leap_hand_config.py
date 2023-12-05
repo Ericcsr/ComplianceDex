@@ -7,8 +7,8 @@ ROBOT_CONFIG = {
                                 [0.0, -0.04, 0.015],
                                 [0.0, -0.05, -0.015]]),
     'ee_link_name': ['fingertip','fingertip_2','fingertip_3','thumb_fingertip'],
-    'ref_q': np.array([np.pi/6, -np.pi/6, np.pi/6, np.pi/6,
-                       np.pi/6, 0.0     , np.pi/6, np.pi/6,
-                       np.pi/6, np.pi/6 , np.pi/6, np.pi/6,
-                       np.pi/3, np.pi/4 , np.pi/6, np.pi/6]),
+    'ref_q': np.array([np.pi/15, -np.pi/6, np.pi/15, np.pi/15,
+                np.pi/15, 0.0     , np.pi/15, np.pi/15,
+                np.pi/15, np.pi/6 , np.pi/15, np.pi/15,
+                np.pi/15, np.pi/6 , np.pi/9, np.pi/9]),
 }

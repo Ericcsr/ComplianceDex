@@ -168,7 +168,27 @@ class GPIS:
         self.bias = torch.from_numpy(data["bias"]).double().cuda()
 
         
-# TODO: Need to visualize GPIS
+def sample_internel_points(mesh, num_points, temperature=10.0):
+    """
+    mesh: open3d.TriangleMesh, should be convex decomposed
+    num_points: number of desired internel points
+    """
+    mesh.compute_adjacency_list()
+    triangle_assignment, num_triangles, area = mesh.cluster_connected_triangles()
+    triangle_assignment = np.asarray(triangle_assignment, dtype=np.int32)
+    triangles = np.asarray(mesh.triangles)
+    vertices = np.asarray(mesh.vertices)
+    areas = np.asarray(area)
+    mean_area = areas.mean()
+    mask = areas > (mean_area * 0.5)
+    internal_points = []
+    for i in range(len(num_triangles)):
+        if mask[i]:
+            verts = torch.from_numpy(vertices[triangles[triangle_assignment == i].flatten()]).double()
+            weight = torch.rand(int(num_points * len(verts)/len(vertices)), len(verts)).double()
+            internal_points.append(torch.softmax(weight * temperature, dim=1) @ verts)
+    internal_points = torch.vstack(internal_points)
+    return internal_points
 
 if __name__ == "__main__":
     import open3d as o3d
@@ -178,25 +198,28 @@ if __name__ == "__main__":
     # mesh = o3d.geometry.TriangleMesh.create_box(1, 1, 1).translate([-0.5,-0.5,-0.5])
     # pcd = mesh.sample_points_poisson_disk(64)
     # points = torch.from_numpy(np.asarray(pcd.points)).cuda().float()
-    mesh = o3d.io.read_triangle_mesh("assets/mug/mug.stl")
-    mesh2 = o3d.io.read_triangle_mesh("assets/mug2/mug2.stl")
+    mesh = o3d.io.read_triangle_mesh("assets/banana/banana.obj")
+    decomp_mesh = o3d.io.read_triangle_mesh("assets/banana/banana_decomp.obj")
+    #mesh = mesh.compute_convex_hull()[0]
+    #mesh2 = o3d.io.read_triangle_mesh("assets/mug2/mug2.stl")
     pcd = mesh.sample_points_poisson_disk(128)
     pcd.colors = o3d.utility.Vector3dVector(np.tile(np.asarray([0,1,0]), (len(pcd.points),1)))
-    pcd2 = mesh2.sample_points_poisson_disk(512)
+    #pcd2 = mesh2.sample_points_poisson_disk(128)
     o3d.visualization.draw_geometries([pcd])
     points = np.asarray(pcd.points)
     np.random.shuffle(points)
     points = torch.from_numpy(points).cuda().double()
-    points2 = torch.from_numpy(np.asarray(pcd2.points)).cuda().double()
+    #points2 = torch.from_numpy(np.asarray(pcd2.points)).cuda().double()
     weights = torch.rand(5,128).cuda().double()
     # normalize dimension 1
     weights = torch.softmax(weights * 10, dim=1)
     print(weights.sum(dim=1))
     
     mask = points[:,0] > 0.0
-    mask2 = points2[:,0] > 0.0
+    #mask2 = points2[:,0] > 0.0
 
-    internal_points = weights @ points
+    #internal_points = weights @ points
+    internal_points = sample_internel_points(decomp_mesh, 20, 100.0).cuda().double()
     new_pcd = o3d.geometry.PointCloud()
     new_pcd.points = o3d.utility.Vector3dVector(internal_points.cpu().numpy())
     new_pcd.colors = o3d.utility.Vector3dVector(np.tile(np.asarray([1,0,0]), (len(internal_points),1)))
@@ -207,37 +230,44 @@ if __name__ == "__main__":
 
     o3d.visualization.draw_geometries([pcd, new_pcd, second_pcd])
     gpis = GPIS(0.08, 1)
-    externel_points = torch.tensor([[-0.1, -0.1, -0.1], [0.1, -0.1, -0.1], [-0.1, 0.1, -0.1],[0.1, 0.1, -0.1],
-                                    [-0.1, -0.1, 0.1], [0.1, -0.1, 0.1], [-0.1, 0.1, 0.1],[0.1, 0.1, 0.1],
-                                    [-0.1,0., 0.], [0., -0.1, 0.], [0.1, 0., 0.], [0., 0.1, 0],
-                                    [0., 0., 0.1], [0., 0., -0.1]]).double().cuda()
+    bound = 0.15
+    externel_points = torch.tensor([[-bound, -bound, -bound], [bound, -bound, -bound], [-bound, bound, -bound],[bound, bound, -bound],
+                                    [-bound, -bound, bound], [bound, -bound, bound], [-bound, bound, bound],[bound, bound, bound],
+                                    [-bound,0., 0.], [0., -bound, 0.], [bound, 0., 0.], [0., bound, 0],
+                                    [0., 0., bound], [0., 0., -bound]]).double().cuda()
     
     # Create mask for partial observed pointcloud
     
 
-    y = torch.vstack([0.1 * torch.ones_like(externel_points[:,0]).cuda().view(-1,1),
+    y = torch.vstack([bound * torch.ones_like(externel_points[:,0]).cuda().view(-1,1),
                       torch.zeros_like(points[mask][:,0]).cuda().view(-1,1),
                       torch.zeros_like(points[~mask][:,0]).cuda().view(-1,1),
-                      torch.zeros_like(points2[~mask2][:,0]).cuda().view(-1,1),
-                     -0.1 * torch.ones_like(internal_points[:,0]).cuda().view(-1,1)])
+                      torch.zeros_like(points[~mask][:,0]).cuda().view(-1,1),
+                      torch.zeros_like(points[~mask][:,0]).cuda().view(-1,1),
+                      #torch.zeros_like(points2[~mask2][:,0]).cuda().view(-1,1),
+                     -bound * torch.ones_like(internal_points[:,0]).cuda().view(-1,1)])
     print(y.shape)
     gpis.fit(torch.vstack([externel_points, 
                            points[mask], 
                            points[~mask],
-                           points2[~mask2],
+                           points[~mask] + torch.randn_like(points[~mask]) * torch.tensor([0.01,0.003,0.003]).cuda(),
+                           points[~mask] + torch.randn_like(points[~mask]) * torch.tensor([0.01,0.003,0.003]).cuda(),
+                           #points2[~mask2],
                            internal_points]), 
-                           y,noise=torch.tensor([0.3] * len(externel_points)+
+                           y,noise=torch.tensor([0.1] * len(externel_points)+
                                                 [0.005] * len(points[mask]) +  # Observed
                                                 [0.02] * len(points[~mask]) +  # Completion 1
-                                                [0.02] * len(points2[~mask2]) +  # Completion 2
-                                                [0.02] * len(internal_points)).double().cuda()) # Internal points
-    test_mean, test_var, test_normal, lb, ub = gpis.get_visualization_data([-0.1,-0.1,-0.1],[0.1,0.1,0.1],steps=100)
-    np.savez("gpis_states/dummy_gpis.npz", mean=test_mean, var=test_var, normal=test_normal, ub=ub, lb=lb)
-    gpis.save_state_data("dummy_state")
-    plt.imshow(test_mean[:,:,50], cmap="seismic", vmax=0.1, vmin=-0.1)
+                                                [0.02] * len(points[~mask]) +  # Completion 2
+                                                [0.02] * len(points[~mask]) +  # Completion 3
+                                                #[0.02] * len(points2[~mask2]) +  # Completion 2
+                                                [0.05] * len(internal_points)).double().cuda()) # Internal points
+    test_mean, test_var, test_normal, lb, ub = gpis.get_visualization_data([-bound,-bound,-bound],[bound,bound,bound],steps=100)
+    np.savez("gpis_states/banana_gpis.npz", mean=test_mean, var=test_var, normal=test_normal, ub=ub, lb=lb)
+    gpis.save_state_data("banana_state")
+    plt.imshow(test_mean[:,:,50], cmap="seismic", vmax=bound, vmin=-bound)
     plt.show()
 
-    points, normals = gpis.topcd(test_mean, test_normal, [-0.1,-0.1,-0.1],[0.1,0.1,0.1],steps=100)
+    points, normals = gpis.topcd(test_mean, test_normal, [-bound,-bound,-bound],[bound,bound,bound],steps=100)
     fitted_pcd = o3d.geometry.PointCloud()
     fitted_pcd.points = o3d.utility.Vector3dVector(points)
     fitted_pcd.normals = o3d.utility.Vector3dVector(normals)
