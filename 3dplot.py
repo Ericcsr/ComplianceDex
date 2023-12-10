@@ -78,7 +78,7 @@ for i in range(0, num_steps, args.stride):
     surf2 = ax.plot_wireframe(X, Y, np.zeros_like(Z), zorder=1, alpha=1, color="grey")
     surf = ax.plot_surface(X, Y, Z,facecolors=fcolors,
                         linewidth=0, antialiased=True, alpha=1, zorder=2)
-    ax.scatter([q_point[0]],[q_point[1]], [q_point[2]], color="orange", s=300, zorder=10)
+    ax.scatter([q_point[0]],[q_point[1]], [q_point[2]], color="orange", s=100, zorder=10)
     normal_field = ax2.quiver(X[::args.quiver_spacing,::args.quiver_spacing],
                               Y[::args.quiver_spacing,::args.quiver_spacing], 
                               np.zeros_like(Z)[::args.quiver_spacing,::args.quiver_spacing], 
@@ -86,7 +86,7 @@ for i in range(0, num_steps, args.stride):
                               normal_vec[::args.quiver_spacing,::args.quiver_spacing,1], 
                               normal_vec[::args.quiver_spacing,::args.quiver_spacing,2], length=0.005, normalize=True)
     ax2.contourf(X, Y, Z, levels = np.linspace(-0.001, 0.001, 2),cmap="jet", alpha=0.5)
-    ax2.scatter([q_point[0]],[q_point[1]], [q_point[2]], color="orange", s=300, zorder=10)
+    ax2.scatter([q_point[0]],[q_point[1]], [q_point[2]], color="orange", s=100, zorder=10)
 
     # Customize the z axis.
     ax.set_zlim(-args.isf_limit, args.isf_limit)

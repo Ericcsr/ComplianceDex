@@ -11,7 +11,7 @@ object_dict = {
     "banana": "assets/banana/banana.urdf",
     "hammer": "assets/hammer/hammer.urdf",
     "lego": "assets/lego/lego.urdf",
-    "mug": "assets/coffeebottle/coffeebottle.urdf",
+    "mug": "assets/mug/mug.urdf",
     "mug2": "assets/mug2/mug2.urdf",
     "coffeebottle": "assets/coffeebottle/coffeebottle.urdf",
 }
@@ -27,6 +27,7 @@ class LeapHandValidator:
         self.floor_offset = floor_offset
         self.floor_id = self._pb.loadURDF("assets/plane.urdf", basePosition=[0,0,-0.025+floor_offset], baseOrientation=[0,0,0,1], useFixedBase=True)
         self._pb.changeDynamics(self.oid, -1, lateralFriction=friction)
+        self._pb.changeDynamics(self.floor_id, -1, lateralFriction=2.0)
         # create visualization tools
         self.visualize_tip = visualize_tip
         if visualize_tip:
@@ -40,6 +41,9 @@ class LeapHandValidator:
                 self.tips.append(tip)
         self.robot.set_tip_friction(friction)
         self.controller = OSImpedanceController(self.robot)
+        self.robot.configure_default_pos([-0.01+self.init_robot_pose[0], 
+                                          0.015+self.init_robot_pose[1], 
+                                          0.10+self.init_robot_pose[2]], [0, 0, 0, 1]) # -0.02
 
     def set_tip_pose(self, tip_pose):
         joint_pose, flag = self.robot.inverse_kinematics(tip_pose)
@@ -71,6 +75,7 @@ class LeapHandValidator:
         self.floor_id = self._pb.loadURDF("assets/plane.urdf", 
                                           basePosition=[0,0,-0.025+self.floor_offset], 
                                           baseOrientation=[0,0,0,1], useFixedBase=True)
+        self._pb.changeDynamics(self.floor_id, -1, lateralFriction=2.0)
 
     def execute_grasp(self, tip_pose, ref_pose, object_pose, kP, kD, max_steps=2000,visualize=True,pause=True):
         """

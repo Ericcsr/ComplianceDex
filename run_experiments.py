@@ -14,10 +14,20 @@ parser.add_argument("--num_iters", type=int, default=1000)
 parser.add_argument("--mode", type=str, default="prob")
 parser.add_argument("--use_config", action="store_true", default=False)
 parser.add_argument("--visualize", action="store_true", default=False)
+parser.add_argument("--disable_gravity", action="store_true", default=False)
+parser.add_argument("--num_repeat", type=int, default=5) 
+parser.add_argument("--uncertainty", type=float, default=20.0)
+# parameters for in configs
+parser.add_argument("--mass", type=float, default=0.1)
+parser.add_argument("--com_x", type=float, default=0.0)
+parser.add_argument("--com_y", type=float, default=0.0)
+parser.add_argument("--com_z", type=float, default=0.0)
+parser.add_argument("--friction", type=float, default=0.5)
+parser.add_argument("--floor_offset", type=float, default=0.0)
 parser.add_argument("--wrist_x", type=float, default=0.0)
 parser.add_argument("--wrist_y", type=float, default=0.0)
 parser.add_argument("--wrist_z", type=float, default=0.0)
-parser.add_argument("--num_repeat", type=int, default=5) 
+
 args = parser.parse_args()
 
 if args.use_config:
@@ -25,11 +35,16 @@ if args.use_config:
     args.wrist_x = config["wrist_x"]
     args.wrist_y = config["wrist_y"]
     args.wrist_z = config["wrist_z"]
+    args.mass = config["mass"]
+    args.com_x = config["com"][0]
+    args.com_y = config["com"][1]
+    args.com_z = config["com"][2]
+    args.friction = config["friction"]
     args.floor_offset = config["floor_offset"]
 
 mesh = o3d.io.read_triangle_mesh(f"assets/{args.exp_name}/{args.exp_name}.obj")
 pcd = mesh.sample_points_poisson_disk(4096)
-friction = 0.5
+friction = args.friction
 gpis = GPIS(0.08, 1) # 0.02, 0.1
 gpis.load_state_data(f"{args.exp_name}_state")
 robot_urdf = "pybullet_robot/src/pybullet_robot/robots/leap_hand/assets/leap_hand/robot.urdf"
@@ -37,7 +52,7 @@ robot_urdf = "pybullet_robot/src/pybullet_robot/robots/leap_hand/assets/leap_han
 # simulation validator
 c = pb.connect(pb.GUI if args.visualize else pb.DIRECT)
 pb.setTimeStep(0.001)
-pb.setGravity(0.0, 0.0, -1.0)
+pb.setGravity(0.0, 0.0, -3.0)
 validator = sim.LeapHandValidator(pb, object_urdf=sim.object_dict[args.exp_name], 
                                   init_object_pose=[0,0,0,0,0,0,1],init_robot_pos=[args.wrist_x,args.wrist_y,args.wrist_z], uid=c, floor_offset=args.floor_offset, friction=friction)
 
@@ -54,14 +69,20 @@ if args.mode in ["kingpis", "wc", "prob"]:
                                             tip_bounding_box=[opt.FINGERTIP_LB, opt.FINGERTIP_UB],
                                             optimize_target=True,
                                             num_iters=args.num_iters,
-                                            palm_offset=[opt.WRIST_OFFSET[0]+args.wrist_x,opt.WRIST_OFFSET[1]+args.wrist_y,opt.WRIST_OFFSET[2]+args.wrist_z])
+                                            palm_offset=[opt.WRIST_OFFSET[0]+args.wrist_x,opt.WRIST_OFFSET[1]+args.wrist_y,opt.WRIST_OFFSET[2]+args.wrist_z],
+                                            mass=args.mass, com=[args.com_x,args.com_y,args.com_z],
+                                            gravity=not args.disable_gravity,
+                                            uncertainty=args.uncertainty)
 elif args.mode in ["sdf", "gpis"]:
     grasp_optimizer = optimizers[args.mode](tip_bounding_box=[opt.FINGERTIP_LB, opt.FINGERTIP_UB],
-                                            optimize_target=True, num_iters=args.num_iters)
+                                            optimize_target=True, num_iters=args.num_iters,
+                                            mass = args.mass, com=[args.com_x,args.com_y,args.com_z],
+                                            gravity=not args.disable_gravity,
+                                            uncertainty=args.uncertainty)
 
 
 def single_experiment():
-    validator.reset() # TODO: Implement reset
+    return_flags = [False, False]
     init_tip_pose = torch.tensor([[[0.05,0.05, 0.02],[0.06,-0.0, -0.01],[0.03,-0.04,0.0],[-0.07,-0.01, 0.02]]]).double().cuda()
     init_joint_angle = torch.tensor([[np.pi/12, -np.pi/9, np.pi/8, np.pi/8,
                                     np.pi/12, 0.0     , np.pi/8, np.pi/8,
@@ -83,8 +104,8 @@ def single_experiment():
     else:
         joint_angles, opt_compliance, opt_target_pose, success_flag = grasp_optimizer.optimize(init_joint_angle,target_pose, compliance, friction, gpis, verbose=False)
         opt_tip_pose = grasp_optimizer.forward_kinematics(joint_angles).view(1,-1, 3)
-    if success_flag == False:
-        return False
+    if success_flag == True:
+        return_flags[0] = True
     
     if args.visualize:
         tips, targets = opt.vis_grasp(opt_tip_pose, opt_target_pose)
@@ -98,16 +119,23 @@ def single_experiment():
     kd = np.sqrt(kp) * 0.8
     #print(finger_pose, target_pose, kp, kd)
     obj_pos, obj_orn = validator.execute_grasp(finger_pose, target_pose, [0,0,0,0,0,0,1], kp, kd, visualize=args.visualize, pause=False)
-    if obj_pos[2] < -0.2: # Dropped too low.
-        return False
-    return True
+    if obj_pos[2] > -0.2: # Dropped too low.
+        return_flags[1] = True
+    return return_flags
 
-success_count = 0
+metric_success_count = 0
+simulation_success_count = 0
+total_success_count = 0
 for i in range(args.num_repeat):
-    success_count += int(single_experiment())
-    print(f"Experiment {i}:",success_count)
+    return_flags = single_experiment()
+    metric_success_count += int(return_flags[0])
+    simulation_success_count += int(return_flags[1])
+    total_success_count += int(return_flags[0] and return_flags[1])
+    print(f"Experiment {i}:","Metric:", return_flags[0], "Simulation:", return_flags[1])
 
-print(f"Success rate: {success_count / args.num_repeat}")
+print(f"Total Success rate: {total_success_count / args.num_repeat}")
+print(f"Metric Success rate: {metric_success_count / args.num_repeat}")
+print(f"Simulation Success rate: {simulation_success_count / args.num_repeat}")
 
 
     
