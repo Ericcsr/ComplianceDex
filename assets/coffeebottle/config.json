@@ -1,8 +1,8 @@
 {
-    "wrist_x": -0.01,
-    "wrist_y": 0.02,
-    "wrist_z": -0.01,
-    "floor_offset": -0.02,
+    "wrist_x": -0.02,
+    "wrist_y": 0.035,
+    "wrist_z": 0.115,
+    "floor_offset":0.045,
     "mass": 0.2,
     "com": [0.0, 0.05, 0.0],
     "friction": 0.5

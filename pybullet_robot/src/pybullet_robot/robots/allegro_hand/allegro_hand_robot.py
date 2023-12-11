@@ -81,8 +81,10 @@ class AllegroHand(BulletRobot):
         self._joint_ids = [all_joint_dict[joint_name]
                            for joint_name in self._joint_names]
 
-        phi = np.pi/6
-        self._tuck = [0.0, phi, phi, phi, 0.0, phi, phi, phi, 0.0, phi, phi, phi, 2 * phi, phi, phi, phi]
+        self._tuck = [0.0, np.pi/6, np.pi/6, np.pi/6, 
+                      0.0, np.pi/6, np.pi/6, np.pi/6, 
+                      0.0, np.pi/6, np.pi/6, np.pi/6, 
+                      2 * np.pi/6, np.pi/6, np.pi/6, np.pi/6]
 
         self._untuck = self._tuck
 

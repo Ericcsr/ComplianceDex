@@ -25,7 +25,7 @@ class LeapHandValidator:
         self.init_robot_pose = init_robot_pos
         self.oid = self._pb.loadURDF(object_urdf)
         self.floor_offset = floor_offset
-        self.floor_id = self._pb.loadURDF("assets/plane.urdf", basePosition=[0,0,-0.025+floor_offset], baseOrientation=[0,0,0,1], useFixedBase=True)
+        self.floor_id = self._pb.loadURDF("assets/plane.urdf", basePosition=[0,0,0.0], baseOrientation=[0,0,0,1], useFixedBase=True)
         self._pb.changeDynamics(self.oid, -1, lateralFriction=friction)
         self._pb.changeDynamics(self.floor_id, -1, lateralFriction=2.0)
         # create visualization tools
@@ -87,9 +87,9 @@ class LeapHandValidator:
         """
         self.set_object_pose(object_pose)
         self.setCompliance(kP, kD)
-        self.robot.configure_default_pos([-0.01+self.init_robot_pose[0], 
-                                          0.015+self.init_robot_pose[1], 
-                                          0.10+self.init_robot_pose[2]], [0, 0, 0, 1]) # -0.02
+        self.robot.configure_default_pos([self.init_robot_pose[0], 
+                                          self.init_robot_pose[1], 
+                                          self.init_robot_pose[2]], [0, 0, 0, 1]) 
         pb.resetBasePositionAndOrientation(self.oid, self.base_position, self.base_orientation)
         #self.set_tip_pose(tip_pose)
         # Each fingertip reach pre-grasp pose
@@ -146,13 +146,12 @@ if __name__ == "__main__":
     print(finger_pose.shape, target_pose.shape)
     #finger_pose -= np.array([args.wrist_x,args.wrist_y,args.wrist_z])
     #target_pose -= np.array([args.wrist_x,args.wrist_y,args.wrist_z])
-    center = target_pose.sum(axis=0) / 4
-    finger_pose = finger_pose - center
+    # center = target_pose.sum(axis=0) / 4
+    # finger_pose = finger_pose - center
     kp = np.load(f"data/compliance_{args.exp_name}.npy").repeat(3).reshape(-1,3)
     kd = np.sqrt(kp) * 0.8
     validator = LeapHandValidator(pb, object_urdf, [0.0,0.0,0.0,0,0,0,1],[args.wrist_x, args.wrist_y, args.wrist_z], uid=c, floor_offset=args.floor_offset)
     print("Finger:",finger_pose, target_pose, kp, kd)
-    validator.execute_grasp(finger_pose,target_pose,[0,0,0,0,0,0,1],kp,kd)
-    validator.reset()
-    validator.execute_grasp(finger_pose,target_pose,[0,0,0,0,0,0,1],kp,kd)
+    validator.execute_grasp(finger_pose,target_pose,[0,0,args.floor_offset,0,0,0,1],kp,kd) # Should set floor offset as positive
+    # original floor offset: -0.025 + args.floor_offset
         
