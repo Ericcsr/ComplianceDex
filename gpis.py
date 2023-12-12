@@ -39,10 +39,15 @@ class GPIS:
         self.noise = noise
         self.E11 = self.kernel_function(X1, X1) + ((self.noise ** 2) * torch.eye(len(X1)).to(X1.device))
 
+    # NOTE: Support batch operation
     def pred(self, X2):
         """
         X2: [num_test, dim]
         """
+        input_shape = list(X2.shape)
+        input_shape[-1] = 1
+        if len(input_shape) == 3:
+            X2 = X2.view(-1,3)
         E12 = self.kernel_function(self.X1, X2)
         # Solve
         solved = torch.linalg.solve(self.E11, E12).T
@@ -51,19 +56,14 @@ class GPIS:
         # Compute the posterior covariance
         E22 = self.kernel_function(X2, X2)
         E2 = E22 - (solved @ E12)
-        #print(E2.diag())
-        return (mu_2 + self.bias).squeeze(),  torch.sqrt(torch.abs(torch.diag(E2))) # prevent nan
-    
-    def pred2(self, X2):
-        E12 = self.kernel_function(self.X1, X2)
-        E11_inv = torch.inverse(self.E11)
-        mu_2 = E12.T @ E11_inv @ self.y1
-        E22 = self.kernel_function(X2, X2)
-        E2 = E22 - E12.T @ E11_inv @ E12
-        return (mu_2 + self.bias).squeeze(),  torch.sqrt(torch.abs(torch.diag(E2))) # prevent nan
+        return (mu_2 + self.bias).view(input_shape[:-1]),  torch.sqrt(torch.abs(torch.diag(E2))).view(input_shape[:-1])
     
     # If we only take a subset of X1, we can sample normal from the function
+    # NOTE: Support batch operation
     def compute_normal(self, X2, index=None):
+        input_shape = X2.shape
+        if len(input_shape) == 3:
+            X2 = X2.view(-1,3)
         if index is None:
             idx = torch.arange(len(self.X1)).to(X2.device)
         else:
@@ -82,9 +82,9 @@ class GPIS:
             normal = X2.grad
             normal = normal / (torch.norm(normal, dim=1, keepdim=True)+1e-6) # prevent nan when closing to the surface
             if index is None:
-                return normal
+                return normal.view(input_shape)
             else:
-                return normal, weight.sum()
+                return normal.view(input_shape), weight.sum()
         
     def compute_multinormals(self, X2, num_normal_samples):
         """
@@ -117,7 +117,7 @@ class GPIS:
         test_mean, test_var = torch.zeros(steps,steps,steps), torch.zeros(steps,steps,steps)
         test_normals = torch.zeros(steps,steps,steps,3)
         for i in range(steps):
-            mean, var = self.pred2(test_X[i].view(-1,3)) # [steps**3]
+            mean, var = self.pred(test_X[i].view(-1,3)) # [steps**3]
             test_normals[i] = self.compute_normal(test_X[i].view(-1,3)).view(steps,steps,3)
             test_mean[i] = mean.view(steps,steps)
             test_var[i] = var.view(steps,steps)
