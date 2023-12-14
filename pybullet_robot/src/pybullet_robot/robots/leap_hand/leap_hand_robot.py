@@ -11,12 +11,6 @@ from ..leap_hand.leap_hand_config import ROBOT_CONFIG
 
 description_path = os.path.dirname(
     os.path.abspath(__file__)) + "/assets/leap_hand/robot.urdf"
-# print description_path
-
-DEFAULT_TUCK = [np.pi/15, -np.pi/6, np.pi/15, np.pi/15,
-                np.pi/15, 0.0     , np.pi/15, np.pi/15,
-                np.pi/15, np.pi/6 , np.pi/15, np.pi/15,
-                np.pi/15, np.pi/6 , np.pi/9, np.pi/9]
 
 class LeapHand(BulletRobot):
 
@@ -65,7 +59,7 @@ class LeapHand(BulletRobot):
 
     """
 
-    def __init__(self,pb_client, tuck=DEFAULT_TUCK, tip_pose=None, robot_description=description_path, config=ROBOT_CONFIG, uid=None, *args, **kwargs):
+    def __init__(self,pb_client, tip_pose=None, robot_description=description_path, config=ROBOT_CONFIG, uid=None, *args, **kwargs):
         """
         :param robot_description: path to description file (urdf, .bullet, etc.)
         :param config: optional config file for specifying robot information 
@@ -89,7 +83,7 @@ class LeapHand(BulletRobot):
                            for joint_name in self._joint_names]
 
         if tip_pose is None:
-            self._tuck = tuck
+            self._tuck = self.ref_q.tolist()
         else:
             self._tuck = self.inverse_kinematics(tip_pose)
         self._untuck = self._tuck
@@ -101,8 +95,6 @@ class LeapHand(BulletRobot):
                             for x in zip(lower_limits, upper_limits)]
 
         self.set_joint_angles(self._tuck)
-        self._uid2 = self._pb.connect(self._pb.DIRECT)
-
         self._ready = True
 
     def reset(self):
@@ -269,39 +261,6 @@ class LeapHand(BulletRobot):
             ee_linvel.append(raw_vel[0])
             ee_angvel.append(raw_vel[1])
         return np.hstack(ee_linvel), np.hstack(ee_angvel)
-    
-    def get_link_velocity(self, link_id, link_offset):
-        q_vel = self.joint_velocities()
-        J_lin, J_ang = self._pb.calculateJacobian(self._id, 
-                                                  linkIndex=link_id, 
-                                                  localPosition=link_offset,
-                                                  objPositions=self.angles().tolist(),
-                                                  objVelocities=self.joint_velocities().tolist(),
-                                                  objAccelerations=[0.0] * self.n_joints())
-        linvel = J_lin @ q_vel
-        angvel = J_ang @ q_vel
-        return linvel, angvel
-    
-    def get_link_pose(self, link_id=-3, link_offset=None):
-        """
-        :return: Pose of link (Cartesian positionof center of mass, 
-                            Cartesian orientation of center of mass in quaternion [x,y,z,w]) 
-        :rtype: [np.ndarray, np.quaternion]
-
-        :param link_id: optional parameter to specify the link id. If not provided,
-                        will return pose of end-effector
-        :type link_id: int
-        """
-        if link_id == -3:
-            self._ee_link_idx
-        offset = [0, 0, 0] if link_offset is None else link_offset
-
-        link_state = self._pb.getLinkState(
-            self._id, link_id, physicsClientId=self._uid)
-        ori = np.quaternion(link_state[1][3], link_state[1][0], link_state[1][1],
-                            link_state[1][2])  # hamilton convention
-        pos = np.asarray(link_state[0]) + quaternion.rotate_vectors(ori, offset)
-        return pos, ori
 
     def n_ee(self):
         return len(self._ee_link_idx)

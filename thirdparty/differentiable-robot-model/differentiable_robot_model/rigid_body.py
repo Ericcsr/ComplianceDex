@@ -130,7 +130,7 @@ class DifferentiableRigidBody(torch.nn.Module):
     def update_joint_state(self, q, qd):
         batch_size = q.shape[0]
 
-        joint_ang_vel = qd @ self.joint_axis
+        joint_ang_vel = qd @ self.joint_axis.type(qd.dtype)
         self.joint_vel = SpatialMotionVec(
             torch.zeros_like(joint_ang_vel), joint_ang_vel
         )
@@ -158,7 +158,7 @@ class DifferentiableRigidBody(torch.nn.Module):
 
     def update_joint_acc(self, qdd):
         # local z axis (w.r.t. joint coordinate frame):
-        joint_ang_acc = qdd @ self.joint_axis
+        joint_ang_acc = qdd @ self.joint_axis.type(qdd.dtype)
         self.joint_acc = SpatialMotionVec(
             torch.zeros_like(joint_ang_acc), joint_ang_acc
         )

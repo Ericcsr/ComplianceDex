@@ -35,12 +35,12 @@ class OSImpedanceController(OSControllerBase):
         and current robot states from the subscribed messages to compute
         task-space force, and then the corresponding joint torques.
         """
-        curr_pos, curr_ori = self._robot.ee_pose()
+        curr_pos, _ = self._robot.ee_pose()
 
         delta_pos = self._goal_pos - curr_pos.reshape(-1, 1)
         # print goal_pos, curr_pos
 
-        curr_vel, curr_omg = self._robot.ee_velocity()
+        curr_vel, _ = self._robot.ee_velocity()
         # print self._goal_pos, curr_pos
         # Desired task-space force using PD law
         F = self._P_pos.dot(delta_pos) - self._D_pos.dot(curr_vel.reshape(-1,1))

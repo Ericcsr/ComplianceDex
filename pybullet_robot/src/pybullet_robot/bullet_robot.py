@@ -413,7 +413,19 @@ class BulletRobot(object):
 
         return joint_information
 
-    def get_link_pose(self, link_id=-3):
+    def get_link_velocity(self, link_id, link_offset):
+        q_vel = self.joint_velocities()
+        J_lin, J_ang = self._pb.calculateJacobian(self._id, 
+                                                  linkIndex=link_id, 
+                                                  localPosition=link_offset,
+                                                  objPositions=self.angles().tolist(),
+                                                  objVelocities=self.joint_velocities().tolist(),
+                                                  objAccelerations=[0.0] * self.n_joints())
+        linvel = J_lin @ q_vel
+        angvel = J_ang @ q_vel
+        return linvel, angvel
+    
+    def get_link_pose(self, link_id=-3, link_offset=None):
         """
         :return: Pose of link (Cartesian positionof center of mass, 
                             Cartesian orientation of center of mass in quaternion [x,y,z,w]) 
@@ -425,35 +437,14 @@ class BulletRobot(object):
         """
         if link_id == -3:
             self._ee_link_idx
+        offset = [0, 0, 0] if link_offset is None else link_offset
 
         link_state = self._pb.getLinkState(
             self._id, link_id, physicsClientId=self._uid)
-        pos = np.asarray(link_state[0])
         ori = np.quaternion(link_state[1][3], link_state[1][0], link_state[1][1],
                             link_state[1][2])  # hamilton convention
-
+        pos = np.asarray(link_state[0]) + quaternion.rotate_vectors(ori, offset)
         return pos, ori
-
-    def get_link_velocity(self, link_id=-3):
-        """
-        :return: Velocity of link (linear, angular in cartesian world frame) 
-        :rtype: [np.ndarray, np.ndarray]
-
-        :param link_id: optional parameter to specify the link id. If not provided,
-                        will return velocity of end-effector
-        :type link_id: int
-        """
-
-        if link_id == -3:
-            self._ee_link_idx
-
-        link_state = self._pb.getLinkState(
-            self._id, link_id, computeLinkVelocity=1, physicsClientId=self._uid)
-
-        lin_vel = np.asarray(link_state[6])
-        ang_vel = np.asarray(link_state[7])
-
-        return lin_vel, ang_vel
 
     def get_joint_state(self, joint_id=None):
         """

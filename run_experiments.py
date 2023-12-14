@@ -89,7 +89,7 @@ def single_experiment():
                                     np.pi/12, np.pi/9 , np.pi/8, np.pi/8,
                                     np.pi/2.5, np.pi/3 , np.pi/6, np.pi/6]]).double().cuda() + torch.randn(1,16).double().cuda() * 0.1
 
-    # initialize target locatino
+    # initialize target location
     rand_n = torch.rand(4,1)
     target_pose = rand_n * torch.tensor(opt.FINGERTIP_LB).view(-1,3) + (1 - rand_n) * torch.tensor(opt.FINGERTIP_UB).view(-1,3).double()
     target_pose = 0.2 * target_pose.unsqueeze(0).cuda()

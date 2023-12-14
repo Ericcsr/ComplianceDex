@@ -15,11 +15,16 @@
   <!-- PALM -->
   <link name="hand_root">
     <origin xyz="0 0 0"/>
+    <inertial>
+      <mass value="0.1"/>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <inertia ixx="1e-4" ixy="0.0" ixz="0.0" iyy="1e-4" iyz="0.0" izz="1e-4"/>
+    </inertial>
   </link>
   <joint name="root_to_base" type="fixed">
     <parent link="hand_root"/>
     <child link="base_link"/>
-    <origin rpy="0 1.571 -1.571" xyz="0 0 0"/>
+    <origin rpy="0 1.571 0" xyz="0 0 0"/>
   </joint>
   <link name="base_link">
     <visual>

@@ -2,7 +2,7 @@ import pybullet as pb
 import numpy as np
 import torch
 import rigidBodySento as rb
-from pybullet_robot.robots import LeapHand
+from pybullet_robot.robots import LeapHand, AllegroHand
 from pybullet_robot.controllers import OSImpedanceController
 import time
 
@@ -16,14 +16,16 @@ object_dict = {
     "coffeebottle": "assets/coffeebottle/coffeebottle.urdf",
 }
 
-class LeapHandValidator:
-    def __init__(self, pb_client, object_urdf, init_object_pose, init_robot_pos, uid, friction=2.0, visualize_tip=True, floor_offset=0.0):
+hand_dict = {"leap":LeapHand, "allegro":AllegroHand}
+
+class HandValidator:
+    def __init__(self, pb_client, hand_model, object_urdf, init_object_pose, init_robot_pos, uid, friction=2.0, visualize_tip=True, floor_offset=0.0):
         self._pb = pb_client
-        self.robot = LeapHand(self._pb,uid=uid)
+        self.robot = hand_dict[hand_model](self._pb,uid=uid)
         self.base_position = init_object_pose[0:3]
         self.base_orientation = init_object_pose[3:7]
         self.init_robot_pose = init_robot_pos
-        self.oid = self._pb.loadURDF(object_urdf)
+        self.oid = self._pb.loadURDF(object_urdf, basePosition=init_object_pose[:3])
         self.floor_offset = floor_offset
         self.floor_id = self._pb.loadURDF("assets/plane.urdf", basePosition=[0,0,0.0], baseOrientation=[0,0,0,1], useFixedBase=True)
         self._pb.changeDynamics(self.oid, -1, lateralFriction=friction)
@@ -41,9 +43,9 @@ class LeapHandValidator:
                 self.tips.append(tip)
         self.robot.set_tip_friction(friction)
         self.controller = OSImpedanceController(self.robot)
-        self.robot.configure_default_pos([-0.01+self.init_robot_pose[0], 
-                                          0.015+self.init_robot_pose[1], 
-                                          0.10+self.init_robot_pose[2]], [0, 0, 0, 1]) # -0.02
+        self.robot.configure_default_pos([self.init_robot_pose[0], 
+                                          self.init_robot_pose[1], 
+                                          self.init_robot_pose[2]], [0, 0, 0, 1]) # -0.02
 
     def set_tip_pose(self, tip_pose):
         joint_pose, flag = self.robot.inverse_kinematics(tip_pose)
@@ -124,6 +126,7 @@ if __name__ == "__main__":
     import json
     parser = ArgumentParser()
     parser.add_argument("--exp_name", type=str, required=True)
+    parser.add_argument("--hand", type=str, default="allegro") # ["leap", "allegro"]
     parser.add_argument("--use_config", action="store_true", default=False)
     parser.add_argument("--wrist_x", type=float, default=0.0)
     parser.add_argument("--wrist_y", type=float, default=0.0)
@@ -150,8 +153,8 @@ if __name__ == "__main__":
     # finger_pose = finger_pose - center
     kp = np.load(f"data/compliance_{args.exp_name}.npy").repeat(3).reshape(-1,3)
     kd = np.sqrt(kp) * 0.8
-    validator = LeapHandValidator(pb, object_urdf, [0.0,0.0,0.0,0,0,0,1],[args.wrist_x, args.wrist_y, args.wrist_z], uid=c, floor_offset=args.floor_offset)
-    print("Finger:",finger_pose, target_pose, kp, kd)
+    validator = HandValidator(pb, args.hand, object_urdf, [0.0,0.0,args.floor_offset,0,0,0,1],[args.wrist_x, args.wrist_y, args.wrist_z], uid=c, floor_offset=args.floor_offset)
+    print("Finger:",args.floor_offset)
     validator.execute_grasp(finger_pose,target_pose,[0,0,args.floor_offset,0,0,0,1],kp,kd) # Should set floor offset as positive
     # original floor offset: -0.025 + args.floor_offset
         

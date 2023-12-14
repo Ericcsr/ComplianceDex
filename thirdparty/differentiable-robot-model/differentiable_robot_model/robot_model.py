@@ -166,8 +166,8 @@ class DifferentiableRobotModel(torch.nn.Module):
         # we assume a non-moving base
         parent_body = self._bodies[0]
         parent_body.vel = SpatialMotionVec(
-            torch.zeros((batch_size, 3), device=self._device),
-            torch.zeros((batch_size, 3), device=self._device),
+            torch.zeros((batch_size, 3), device=self._device).type(q.dtype),
+            torch.zeros((batch_size, 3), device=self._device).type(q.dtype),
         )
 
         # propagate the new joint state through the kinematic chain to update bodies position/velocities
@@ -244,11 +244,12 @@ class DifferentiableRobotModel(torch.nn.Module):
             for i,link_name in enumerate(link_names):
                 ee_pose, ee_quat = all_poses[link_name]
                 if offsets is not None:
-                    ee_pose += quat_rotate(ee_quat, torch.tensor(offsets[i]).to(ee_quat.device).unsqueeze(0))
+                    offset = torch.tensor(offsets[i]).to(ee_quat.device).unsqueeze(0).repeat(q.shape[0],1)
+                    ee_pose += quat_rotate(ee_quat, offset)
                 ee_poses.append(ee_pose)
                 ee_quats.append(ee_quat)
         else:
-            qd = torch.zeros_like(q)
+            qd = torch.zeros_like(q).to(q.device)
             self.update_kinematic_state(q, qd)
 
             for i,link_name in enumerate(link_names):
@@ -256,7 +257,8 @@ class DifferentiableRobotModel(torch.nn.Module):
                 pos = pose.translation()
                 rot = pose.get_quaternion()
                 if offsets is not None:
-                    pos += quat_rotate(rot, torch.tensor(offsets[i]).to(rot.device).unsqueeze(0))
+                    offset = torch.tensor(offsets[i]).to(rot.device).unsqueeze(0).repeat(q.shape[0],1)
+                    pos += quat_rotate(rot, offset)
                 ee_poses.append(pos)
                 ee_quats.append(rot)
         return torch.hstack(ee_poses), torch.hstack(ee_quats)
