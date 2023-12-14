@@ -6,7 +6,9 @@ import json
 from allegro_hand_kdl.srv import PoseGoalRequest, PoseGoal
 from allegro_hand_kdl.srv import GainParamRequest, GainParam
 
-
+#RIGHT_HAND_ORDER = [0,1,2,3]
+#LEFT_HAND_ORDER = [2,1,0,3]
+HAND = "left"
 def map_to_palm(world_poses, palm_pose):
     """
     world_poses: (N, 3) array of poses in world frame.
@@ -42,6 +44,10 @@ if __name__ == "__main__":
     finger_pose = np.load(f"data/contact_{args.exp_name}.npy")
     target_pose = np.load(f"data/target_{args.exp_name}.npy")
     compliance = np.load(f"data/compliance_{args.exp_name}.npy").flatten()
+    if HAND == "left":
+        finger_pose[0,1] *= -1
+        finger_pose[2,1] *= -1
+        finger_pose[3,1] *= -1
 
     finger_pose = map_to_palm(finger_pose, np.array(wrist_pose)).flatten()
     print(finger_pose)
@@ -58,19 +64,19 @@ if __name__ == "__main__":
     hand_gain_client.wait_for_service()
 
     req = GainParamRequest()
-    req.kp = np.array([200,200,200,200.0]).tolist()
+    req.kp = np.array([100,100,100,100.0]).tolist()
     req.kd = (0.8 * np.sqrt(compliance)).tolist()
     res = hand_gain_client(req)
     print(res.success)
 
     # move the hand to idle pose in joint space.
     idle_pose_req = PoseGoalRequest()
-    idle_pose_req.pose = [0.08, 0.08, 0.0625, 0.08, 0.0, 0.0625, 0.08, -0.08, 0.0625, 0.08, 0.0771, -0.04]
+    idle_pose_req.pose = [0.06, -0.06, 0.0825, 0.06, 0.0, 0.0825, 0.06, 0.06, 0.0825, 0.08, -0.0071, -0.05]
     result = hand_client(idle_pose_req)
     if not result.success:
         print("allegro hand fail to initialize")
         exit(1)
-
+    print("Compliance:", compliance)
     # Should know wrist position and orientation
     wrist_req = PoseGoalRequest()
     wrist_req.pose = wrist_pose
@@ -86,11 +92,12 @@ if __name__ == "__main__":
     res = hand_client(req)
     print(res.success)
 
-    # req = GainParamRequest()
-    # req.kp = compliance.tolist()
-    # req.kd = (0.8 * np.sqrt(compliance)).tolist()
-    # res = hand_gain_client(req)
-    # print(res.success)
+    req = GainParamRequest()
+    compliance = compliance * 7
+    req.kp = compliance.tolist()
+    req.kd = (0.8 * np.sqrt(compliance)).tolist()
+    res = hand_gain_client(req)
+    print(res.success)
 
     input("Press to send request")
     req = PoseGoalRequest()
