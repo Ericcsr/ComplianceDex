@@ -682,7 +682,6 @@ class ProbabilisticGraspOptimizer:
         z_dist_cost = 1/(anchor_pose[:,:,2]-0.01)
         z_dist_cost[~z_mask] *= 0.0
         z_cost = z_dist_cost.sum(dim=1) * 1000.0
-        #print(anchor_pose[:,:,2])
         cost += z_cost
         return cost
     
