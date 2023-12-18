@@ -9,7 +9,7 @@ import logging
 from ..allegro_hand.allegro_hand_config import ROBOT_CONFIG
 
 description_path = os.path.dirname(
-    os.path.abspath(__file__)) + "/models/allegro_hand_description_right.urdf"
+    os.path.abspath(__file__)) + "/models/allegro_hand_description_left.urdf"
 # print description_path
 
 class AllegroHand(BulletRobot):

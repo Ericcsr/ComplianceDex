@@ -80,7 +80,7 @@ class GPIS:
             mu_2 = E12[idx].T @ weight
             mu_2.sum().backward()
             normal = X2.grad
-            normal = normal / (torch.norm(normal, dim=1, keepdim=True)+1e-6) # prevent nan when closing to the surface
+            normal = normal / (torch.norm(normal, dim=1, keepdim=True)+1e-8) # prevent nan when closing to the surface
             if index is None:
                 return normal.view(input_shape)
             else:

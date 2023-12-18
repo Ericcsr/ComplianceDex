@@ -1,6 +1,6 @@
 {
     "wrist_x": -0.03,
-    "wrist_y": 0.0,
+    "wrist_y": 0.05,
     "wrist_z": 0.115,
     "floor_offset":0.045,
     "mass": 0.2,
