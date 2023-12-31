@@ -47,7 +47,7 @@ class GPIS:
         input_shape = list(X2.shape)
         input_shape[-1] = 1
         if len(input_shape) == 3:
-            X2 = X2.view(-1,3)
+            X2 = X2.reshape(-1,3)
         E12 = self.kernel_function(self.X1, X2)
         # Solve
         solved = torch.linalg.solve(self.E11, E12).T
@@ -63,7 +63,7 @@ class GPIS:
     def compute_normal(self, X2, index=None):
         input_shape = X2.shape
         if len(input_shape) == 3:
-            X2 = X2.view(-1,3)
+            X2 = X2.reshape(-1,3)
         if index is None:
             idx = torch.arange(len(self.X1)).to(X2.device)
         else:

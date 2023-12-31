@@ -47,6 +47,15 @@ def apply_external_world_force_on_local_point(pb, body_id, link_id, world_force,
     local_force, _ = pybullet.multiplyTransforms([0., 0, 0], inv_link_quat, world_force, [0, 0, 0, 1])
     pb.applyExternalForce(body_id, link_id, local_force, local_com_offset, flags=pybullet.LINK_FRAME)
 
+def move_object_local_frame(pb, frame_id, obj_ids, local_coords):
+    link_com, link_quat = get_link_com_xyz_orn(pb, frame_id, -1)
+    world_coords = []
+    for i in range(len(obj_ids)):
+        world_coord = pybullet.multiplyTransforms(link_com, link_quat, local_coords[i], [0, 0, 0, 1])[0]
+        pb.resetBasePositionAndOrientation(obj_ids[i], world_coord, [0, 0, 0, 1])
+        world_coords.append(world_coord)
+    return world_coords
+
 
 def get_link_com_linear_velocity(pb, body_id, link_id):
     # get the Link CoM linear velocity in the world coordinate frame
