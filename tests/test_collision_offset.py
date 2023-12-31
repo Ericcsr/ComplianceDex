@@ -1,6 +1,5 @@
 import pybullet as pb
 import numpy as np
-import tf
 import torch
 from rigidBodySento import create_primitive_shape
 from differentiable_robot_model import DifferentiableRobotModel
@@ -14,7 +13,7 @@ joint_angles = np.array([0.0, np.pi/9, np.pi/9, np.pi/6,
                          2 * np.pi/6, np.pi/9, np.pi/6, np.pi/6])
 
 urdf_link = "pybullet_robot/src/pybullet_robot/robots/allegro_hand/models/allegro_hand_description_left.urdf"
-init_pose = [0.1, 0.06, 0.1, -np.pi/2,np.pi/2,0.0]
+init_pose = [0.02, -0.04, 0.05, 0.0,0.0,3 * np.pi/4]
 
 ori = Rotation.from_euler("XYZ", init_pose[3:])
 print(ori.as_matrix())
