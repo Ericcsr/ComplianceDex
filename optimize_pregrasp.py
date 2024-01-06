@@ -9,6 +9,7 @@ from functools import partial
 from differentiable_robot_model.robot_model import DifferentiableRobotModel
 from pybullet_robot.robots import robot_configs
 from math_utils import minimum_wrench_reward, euler_angles_to_matrix
+from pb_grasp_visualizer import GraspVisualizer
 
 
 EE_OFFSETS = [[0.0, -0.04, 0.015],
@@ -17,12 +18,12 @@ EE_OFFSETS = [[0.0, -0.04, 0.015],
            [0.0, -0.05, -0.015]]
 
 # Initial guess for wrist pose
-WRIST_OFFSET = np.array([[-0.05, 0.0, 0.01, 0.0,0.0,0.0]])
-                        #  [-0.04, 0.03, 0.02, 0.0,0.0,-np.pi/4],
-                        #  [-0.01, 0.0, 0.02, 0.0,0.0,np.pi/4],
-                        #  [0.1, 0.06, -0.03, -np.pi/2,np.pi/2,0.0],
-                        #  [-0.0, -0.06, 0.02, 0.0,0.0,np.pi/2],
-                        #  [0.02, -0.04, 0.02, 0.0,0.0,3 * np.pi/4]]) # [0.02]
+WRIST_OFFSET = np.array([[-0.05, 0.0, 0.03, 0.0, 0.0, 0.0],#])
+                         [-0.04, 0.03, 0.03, 0.0,0.0,-np.pi/4],
+                         [-0.04, -0.03, 0.03, 0.0,0.0,np.pi/4],
+                         [0.1, 0.06, -0.05, -np.pi/2,np.pi/2,0.0],
+                         [-0.0, -0.06, 0.03, 0.0,0.0,np.pi/2],
+                         [0.02, -0.04, 0.03, 0.0,0.0,3 * np.pi/4]]) # [0.02]
 #WRIST_OFFSET = [-0.58, -0.05, -0.19]
 
 z_margin = 0.3
@@ -534,12 +535,18 @@ class WCKinGPISGraspOptimizer:
                  ee_link_names,
                  ee_link_offsets = EE_OFFSETS,
                  palm_offset=WRIST_OFFSET,
-                 num_iters=1000, optimize_target=False, # dummy
+                 num_iters=1000, 
+                 optimize_target=False, # dummy
                  ref_q=None,
                  tip_bounding_box=[FINGERTIP_LB, FINGERTIP_UB],
                  min_force = 5.0,
+                 anchor_link_names = None,
+                 anchor_link_offsets = None,
+                 collision_pairs = None,
+                 collision_pair_threshold = 0.02,
                  mass=0.1, com=[0.0, 0.0, 0.0], gravity=True,
-                 uncertainty=0.0):
+                 uncertainty=0.0,
+                 optimize_palm=False):
         self.ref_q = torch.tensor(ref_q).cuda()
         self.robot_model = DifferentiableRobotModel(robot_urdf, device="cuda:0")
         self.num_iters = num_iters
@@ -550,18 +557,63 @@ class WCKinGPISGraspOptimizer:
         self.min_force = min_force
         self.mass = mass
         self.com = com
+        self.uncertainty = uncertainty
         self.gravity = gravity
+        self.optimize_palm = optimize_palm
+        self.anchor_link_names = anchor_link_names
+        self.anchor_link_offsets = anchor_link_offsets
+        collision_pairs = torch.tensor(collision_pairs).long().cuda()
+        self.collision_pair_left = collision_pairs[:,0]
+        self.collision_pair_right = collision_pairs[:,1]
+        self.collision_pair_threshold = collision_pair_threshold
 
-    def forward_kinematics(self, joint_angles):
+    def forward_kinematics(self, joint_angles, palm_poses=None):
         """
         :params: joint_angles: [num_envs, num_dofs]
+        :params: palm_offset: [num_envs, 3]
         :return: tip_poses: [num_envs * num_fingers, 3]
         """
-        tip_poses = self.robot_model.compute_forward_kinematics(joint_angles, self.ee_link_names,
-                                                                offsets=self.ee_link_offsets, recursive=True)[0].view(-1,3) + self.palm_offset
-        return tip_poses.view(-1,3)
+        if palm_poses is None:
+            palm_poses = self.palm_offset
+        tip_poses = self.robot_model.compute_forward_kinematics(joint_angles.float(), self.ee_link_names,
+                                                                offsets=self.ee_link_offsets, recursive=False)[0].double().view(-1,4,3)
+        R = euler_angles_to_matrix(palm_poses[:,3:], convention="XYZ") #[num_envs, 3, 3]
+        tip_poses = torch.bmm(R, tip_poses.transpose(1,2)).transpose(1,2) + palm_poses[:,:3].unsqueeze(1)
+        return tip_poses
     
-    def optimize(self, joint_angles, target_pose, compliance, friction_mu, gpis, verbose=True):
+    def compute_collision_loss(self, joint_angles, palm_poses=None):
+        if palm_poses is None:
+            palm_poses = self.palm_offset
+        anchor_pose = self.robot_model.compute_forward_kinematics(joint_angles.float(), 
+                                                                  self.anchor_link_names, 
+                                                                  offsets=self.anchor_link_offsets, 
+                                                                  recursive=False)[0].double().view(-1,len(self.anchor_link_names),3)
+        R = euler_angles_to_matrix(palm_poses[:,3:], convention="XYZ") #[num_envs, 3, 3]
+        anchor_pose = torch.bmm(R, anchor_pose.transpose(1,2)).transpose(1,2) + palm_poses[:,:3].unsqueeze(1)
+        collision_pair_left = anchor_pose[:,self.collision_pair_left]
+        collision_pair_right = anchor_pose[:,self.collision_pair_right]
+        dist = torch.norm(collision_pair_left - collision_pair_right, dim=2) # [num_collision_pairs]
+        # Add pairwise collision cost
+        mask = dist < self.collision_pair_threshold
+        inverse_dist = 1.0 / dist
+        inverse_dist[~mask] *= 0.0
+        cost =  inverse_dist.sum(dim=1)
+        # Add ground collision cost
+        z_mask = anchor_pose[:,:,2] < 0.02
+        z_dist_cost = 1/(anchor_pose[:,:,2]) * 0.1
+        z_dist_cost[~z_mask] *= 0.0
+        z_cost = z_dist_cost.sum(dim=1)
+        cost += z_cost
+        # add palm-floor collision cost
+        if self.optimize_palm:
+            palm_z_mask = palm_poses[:,2] < 0.02
+            palm_z_dist_cost = 1/(palm_poses[:,2])
+            palm_z_dist_cost[~palm_z_mask] *= 0.0
+            palm_z_cost = palm_z_dist_cost
+            cost += palm_z_cost
+        return cost
+
+    def optimize(self, init_joint_angles, target_pose, compliance, friction_mu, gpis, verbose=True):
         """
         NOTE: scale matters in running optimization, need to normalize the scale
         Params:
@@ -570,42 +622,68 @@ class WCKinGPISGraspOptimizer:
         compliance: [num_envs, num_fingers]
         opt_mask: [num_envs, num_fingers]
         """
-        joint_angles = joint_angles.clone().requires_grad_(True)
-        compliance = compliance.clone().requires_grad_(True)
-        optim = torch.optim.RMSprop([{"params":joint_angles, "lr":1e-2}, # Directly optimizing joint angles can result in highly non-linear manifold..
-                                        {"params":compliance, "lr":0.2}])
+        joint_angles = init_joint_angles.clone().requires_grad_(True)
+        #compliance = compliance.clone().requires_grad_(True)
+        params_list = [{"params":joint_angles, "lr":1e-3}]
+        palm_poses = self.palm_offset[:,:3].clone().requires_grad_(self.optimize_palm)
+        palm_oris = self.palm_offset[:,3:].clone().requires_grad_(self.optimize_palm)
+        if self.optimize_palm:
+            params_list.append({"params":palm_poses, "lr":1e-3})
+            params_list.append({"params":palm_oris, "lr":1e-3})
+
+        optim = torch.optim.RMSprop(params_list)
+        num_envs = init_joint_angles.shape[0]
+        
         opt_joint_angle = joint_angles.clone()
         opt_compliance = compliance.clone()
         opt_target_pose = target_pose.clone()
-        opt_value = torch.inf * torch.ones(joint_angles.shape[0]).double().cuda()
-        normal = None
-        opt_margin = None
-        for _ in range(self.num_iters):
+        opt_palm_poses = self.palm_offset.clone()
+        opt_value = torch.inf * torch.ones(num_envs).double().cuda()
+        opt_margin = torch.zeros(num_envs, 4).double().cuda()
+        opt_R, opt_t = torch.zeros(num_envs, 3, 3).double().cuda(), torch.zeros(num_envs, 3).double().cuda()
+        for s in range(self.num_iters):
             optim.zero_grad()
-            all_tip_pose = self.forward_kinematics(joint_angles)
+            palm_posori = torch.hstack([palm_poses, palm_oris])
+            all_tip_pose = self.forward_kinematics(joint_angles, palm_posori) # [num_envs, num_fingers, 3]
+
+            # Target pose are passively determined.
             dist, var = gpis.pred(all_tip_pose)
-            tar_dist, _ = gpis.pred(target_pose.view(-1,3))
             current_normal = gpis.compute_normal(all_tip_pose)
-            task_cost, margin, forces = minimum_wrench_reward(all_tip_pose.view(-1,3), 
-                                                              current_normal.view(-1,3), 
-                                                              friction_mu, min_force=self.min_force)
-            force_norm = forces.norm(dim=1).view(target_pose.shape[0], target_pose.shape[1])
+            task_cost = 0.0
+            margin = []
+            forces = []
+            # Using wrench closure formulation, we cannot align multiple contact points with same pregrasp.
+            for i in range(num_envs):
+                task_cost_, margin_, forces_ = minimum_wrench_reward(all_tip_pose[i], 
+                                                                     current_normal[i], 
+                                                                     friction_mu, min_force=self.min_force)
+                # Compute target positions
+                target_pose[i] = all_tip_pose[i].detach() + forces_.detach() / compliance[i].unsqueeze(1)
+                task_cost += task_cost_
+                margin.append(margin_)
+                forces.append(forces_)
+            margin = torch.stack(margin)
+            forces = torch.stack(forces)
+            force_norm = forces.norm(dim=2).view(target_pose.shape[0], target_pose.shape[1])
             forces = forces.view(target_pose.shape[0], target_pose.shape[1], 3)
-            # task_reward, margin, force_norm = force_eq_reward(all_tip_pose.view(target_pose.shape), 
-            #                     target_pose, 
-            #                     compliance, 
-            #                     friction_mu, 
-            #                     current_normal.view(target_pose.shape))
+            
             c = task_cost * 5.0
             center_tip = all_tip_pose.view(target_pose.shape).mean(dim=1)
-            center_target = target_pose.mean(dim=1)
+            center_target = target_pose.mean(dim=1) # Become a regularization term
             force_cost = -(force_norm * torch.nn.functional.softmin(force_norm,dim=1)).clamp(max=1.0).sum(dim=1)
             center_cost = (center_tip - center_target).norm(dim=1) * 10.0
             ref_cost = (joint_angles - self.ref_q).norm(dim=1) * 20.0
-            variance_cost = 20 * torch.log(100 * var).view(target_pose.shape[0], target_pose.shape[1])
+            variance_cost = self.uncertainty * torch.log(100 * var).view(target_pose.shape[0], target_pose.shape[1])
             dist_cost = 1000 * torch.abs(dist).view(target_pose.shape[0], target_pose.shape[1]).sum(dim=1)
-            tar_dist_cost = 10 * tar_dist.view(target_pose.shape[0], target_pose.shape[1]).sum(dim=1)
-            l = c + dist_cost + tar_dist_cost + center_cost + force_cost + ref_cost + variance_cost.max(dim=1)[0] # Encourage target pose to stay inside the object
+            l = c + dist_cost + center_cost + force_cost + ref_cost + variance_cost.max(dim=1)[0] # Encourage target pose to stay inside the object
+            # Add kinematic constraint loss
+            if self.optimize_palm:
+                palm_dist,_ = gpis.pred(palm_poses)
+                palm_dist = palm_dist
+                l += 1/palm_dist # Need to ensure palm is outside the object.
+                #print("palm dist:", float(palm_dist.mean()))
+            l += self.compute_collision_loss(joint_angles, palm_posori)
+
             l.sum().backward()
             if verbose:
                 print("Loss:",float(l.sum()), float(task_cost))
@@ -613,21 +691,17 @@ class WCKinGPISGraspOptimizer:
                 print(dist, all_tip_pose, margin)
             with torch.no_grad():
                 update_flag = l < opt_value
-                if update_flag.sum():
-                    normal = current_normal
-                    opt_margin = margin
-                    opt_value[update_flag] = l[update_flag]
-                    opt_joint_angle[update_flag] = joint_angles[update_flag]
-                    opt_target_pose[update_flag] = all_tip_pose.view(target_pose.shape)[update_flag] + forces[update_flag] / compliance[update_flag].unsqueeze(2)
-                    opt_compliance[update_flag] = compliance[update_flag]
+                if update_flag.sum() and s > 20:
+                    #opt_margin = margin[update_flag].clone()
+                    opt_value[update_flag] = l[update_flag].clone()
+                    opt_joint_angle[update_flag] = joint_angles[update_flag].clone()
+                    opt_target_pose[update_flag] = target_pose[update_flag].clone()
+                    opt_compliance[update_flag] = compliance[update_flag].clone() # dummy
+                    opt_palm_poses[update_flag] = torch.hstack([palm_poses, palm_oris])[update_flag].clone()
             optim.step()
-            with torch.no_grad(): # apply bounding box constraints
-                compliance.clamp_(min=40.0) # prevent negative compliance
-                target_pose.clamp_(min=self.tip_bounding_box[0], max=self.tip_bounding_box[1])
         if verbose:
-            print(opt_margin, normal)
-        flag = (opt_margin > 0.0).all()
-        return opt_joint_angle, opt_compliance, opt_target_pose, flag
+            print(opt_margin)
+        return opt_joint_angle, opt_compliance, opt_target_pose, opt_palm_poses, opt_margin, opt_R, opt_t
 
 class ProbabilisticGraspOptimizer:
     def __init__(self, 
@@ -638,12 +712,12 @@ class ProbabilisticGraspOptimizer:
                  num_iters=1000, optimize_target=False,
                  ref_q=None,
                  tip_bounding_box=[FINGERTIP_LB, FINGERTIP_UB],
-                #  pregrasp_coefficients = [[0.8,0.8,0.8,0.8],
-                #                           [0.8,0.8,0.8,0.8],
-                #                           [0.8,0.8,0.8,0.8]],
-                #  pregrasp_weights = [0.1,0.8,0.1],
-                 pregrasp_coefficients = [[0.75,0.75,0.75,0.75]],
-                 pregrasp_weights = [1.0],
+                 pregrasp_coefficients = [[0.7,0.7,0.7,0.7],
+                                          [0.7,0.7,0.7,0.7],
+                                          [0.7,0.7,0.7,0.7]],
+                 pregrasp_weights = [0.2,0.6,0.2],
+                #  pregrasp_coefficients = [[0.75,0.75,0.75,0.75]],
+                #  pregrasp_weights = [1.0],
                  anchor_link_names = None,
                  anchor_link_offsets = None,
                  collision_pairs = None,
@@ -674,7 +748,7 @@ class ProbabilisticGraspOptimizer:
         self.gravity = gravity
         self.uncertainty = uncertainty
 
-    def forward_kinematics(self, joint_angles, palm_poses=None):
+    def forward_kinematics(self, joint_angles, palm_poses=None, link_names=None):
         """
         :params: joint_angles: [num_envs, num_dofs]
         :params: palm_offset: [num_envs, 3]
@@ -682,8 +756,13 @@ class ProbabilisticGraspOptimizer:
         """
         if palm_poses is None:
             palm_poses = self.palm_offset
-        tip_poses = self.robot_model.compute_forward_kinematics(joint_angles.float(), self.ee_link_names,
-                                                                offsets=self.ee_link_offsets, recursive=False)[0].double().view(-1,4,3)
+        if link_names is None:
+            link_names = self.ee_link_names
+            offsets = self.ee_link_offsets
+        else:
+            offsets = [[0.0, 0.0, 0.0]] * len(link_names)
+        tip_poses = self.robot_model.compute_forward_kinematics(joint_angles.float(), link_names,
+                                                                offsets=offsets, recursive=False)[0].double().view(-1,len(link_names),3)
         R = euler_angles_to_matrix(palm_poses[:,3:], convention="XYZ") #[num_envs, 3, 3]
         tip_poses = torch.bmm(R, tip_poses.transpose(1,2)).transpose(1,2) + palm_poses[:,:3].unsqueeze(1)
         return tip_poses
@@ -747,13 +826,14 @@ class ProbabilisticGraspOptimizer:
         # initial feasibility should be equally important as task reward.
         c = -task_reward * 100.0
         center_cost = -self.compute_contact_margin(all_tip_pose, target_pose, current_normal, friction_mu=friction_mu) * 50.0
-        reg_cost = ((R@all_tip_pose.transpose(1,2)).transpose(1,2) + t - all_tip_pose).norm(dim=2).sum(dim=1)
-        force_cost = -(force_norm * torch.nn.functional.softmin(force_norm,dim=1)).clamp(max=10.0).sum(dim=1) 
+        reg_cost = (torch.bmm(R,all_tip_pose.transpose(1,2)).transpose(1,2) + t.unsqueeze(1) - all_tip_pose).norm(dim=2).sum(dim=1)
+        #force_cost = -(force_norm * torch.nn.functional.softmin(force_norm,dim=1)).clamp(max=10.0).sum(dim=1) * 10
+        force_cost = - (all_tip_pose - target_pose).norm(dim=2).sum(dim=1) * 30.0
         #force_cost = -force_norm.clamp(max=10.0).mean(dim=1) * 20.0
         ref_cost = (joint_angles - self.ref_q).norm(dim=1) * 10.0 # 20.0
         variance_cost = self.uncertainty * torch.log(100 * var).max(dim=1)[0]
         #print(float(variance_cost.max(dim=1)[0]))
-        dist_cost = 1000 * torch.abs(dist).sum(dim=1)
+        dist_cost = 2000 * torch.abs(dist).sum(dim=1)
         tar_dist_cost = 30 * tar_dist.sum(dim=1)
         l = c + dist_cost + tar_dist_cost + center_cost + force_cost + ref_cost + variance_cost + reg_cost * 200 # Encourage target pose to stay inside the object
         #print("All costs:", float(c.mean()), float(dist_cost.mean()), float(tar_dist_cost.mean()), float(center_cost.mean()), float(force_cost.mean()), float(ref_cost.mean()), float(variance_cost.mean()), float(reg_cost.mean()))
@@ -784,7 +864,14 @@ class ProbabilisticGraspOptimizer:
             palm_dist = palm_dist
             total_loss += 1/palm_dist # Need to ensure palm is outside the object.
             #print("palm dist:", float(palm_dist.mean()))
-        #total_loss += self.compute_collision_loss(joint_angles, palm_posori) #+ torch.abs(hand_dist - 0.05) * 10.0 # NOTE: Experimental
+        # Should add finger segment penetration loss
+        # link_pos = self.forward_kinematics(joint_angles, palm_posori, link_names=["link_1.0", "link_2.0", "link_3.0",
+        #                                                                           "link_5.0", "link_6.0", "link_7.0",
+        #                                                                           "link_9.0", "link_10.0", "link_11.0"])
+        # link_dist,_ = gpis.pred(link_pos)
+        # total_loss += (1/link_dist).sum(dim=1)
+        
+        total_loss += self.compute_collision_loss(joint_angles, palm_posori) #+ torch.abs(hand_dist - 0.05) * 10.0 # NOTE: Experimental
         self.total_loss = total_loss
         loss = total_loss.sum() # TODO: TO BE FINISHED
         loss.backward()
@@ -821,8 +908,8 @@ class ProbabilisticGraspOptimizer:
         opt_joint_angle = init_joint_angles.clone()
         opt_compliance = compliance.clone()
         opt_target_pose = target_pose.clone()
-        opt_value = torch.inf * torch.ones(init_joint_angles.shape[0]).double().cuda()
-        opt_margin = torch.zeros(init_joint_angles.shape[0], 4).double().cuda()
+        opt_value = torch.inf * torch.ones(num_envs).double().cuda()
+        opt_margin = torch.zeros(num_envs, 4).double().cuda()
         opt_palm_poses = self.palm_offset.clone()
         opt_R, opt_t = torch.zeros(num_envs, 3, 3).double().cuda(), torch.zeros(num_envs, 3).double().cuda()
         for s in range(self.num_iters):
@@ -850,14 +937,14 @@ class ProbabilisticGraspOptimizer:
                     opt_target_pose[update_flag] = target_pose[update_flag].clone()
                     opt_compliance[update_flag] = compliance[update_flag].clone()
                     opt_palm_poses[update_flag] = torch.hstack([palm_poses, palm_oris])[update_flag].clone()
-                    opt_R[update_flag] = self.R[update_flag].clone()
-                    opt_t[update_flag] = self.t[update_flag].clone()
+                    #opt_R[update_flag] = self.R[update_flag].clone()
+                    #opt_t[update_flag] = self.t[update_flag].clone()
             if not isinstance(self.optim, torch.optim.LBFGS):
                 self.optim.step()
             with torch.no_grad(): # apply bounding box constraints
                 compliance.clamp_(min=80.0) # prevent negative compliance
                 target_pose.clamp_(min=self.tip_bounding_box[0], max=self.tip_bounding_box[1])
-                #palm_poses.clamp_(min=self.palm_offset[:,:3]-0.3, max=self.palm_offset[:,:3]+0.3)
+                #palm_poses.clamp_(min=self.palm_offset[:,:3]-0.05, max=self.palm_offset[:,:3]+0.05)
                 #palm_oris.clamp_(min=self.palm_offset[:,3:]-1, max=self.palm_offset[:,3:]+1)
                 
         print("Margin:",opt_margin)
@@ -911,21 +998,21 @@ if __name__ == "__main__":
     if args.exp_name != "realsense":
         mesh = o3d.io.read_triangle_mesh(f"assets/{args.exp_name}/{args.exp_name}.obj") # TODO: Unify other model
         pcd = mesh.sample_points_poisson_disk(4096)
-        center = pcd.get_axis_aligned_bounding_box().get_center()
+        center = pcd.get_oriented_bounding_box().get_center()
         WRIST_OFFSET[:,0] += center[0]
         WRIST_OFFSET[:,1] += center[1]
         WRIST_OFFSET[:,2] += 2 * center[2]
     else:
         pcd = o3d.io.read_point_cloud("../ComplianceDexSensor/obj_cropped.ply")
-        center = pcd.get_axis_aligned_bounding_box().get_center()
-        print("AABB:", pcd.get_axis_aligned_bounding_box())
+        center = pcd.get_oriented_bounding_box().get_center()
+        print("OBB:", pcd.get_oriented_bounding_box())
         WRIST_OFFSET[:,0] += center[0]
         WRIST_OFFSET[:,1] += center[1]
         WRIST_OFFSET[:,2] += 2 * center[2]
         #pcd.translate(-center)
     
     # GPIS formulation
-    gpis = GPIS(0.08,1.0) # Extremely sensitive to kernel length scale
+    gpis = GPIS(0.08,1) # Extremely sensitive to kernel length scale
     if args.exp_name == "realsense":
         pcd_simple = pcd.farthest_point_down_sample(200)
         points = np.asarray(pcd_simple.points)
@@ -978,10 +1065,6 @@ if __name__ == "__main__":
     elif args.hand == "allegro":
         robot_urdf = "pybullet_robot/src/pybullet_robot/robots/allegro_hand/models/allegro_hand_description_left.urdf"
         #robot_urdf = "assets/kuka_allegro/model.urdf"
-    if args.mode == "wc":
-        compliance = torch.tensor([[200.0,200.0, 200.0, 200.0]]).double().cuda()
-    else:
-        compliance = torch.tensor([[10.0, 10.0, 10.0, 20.0]]).double().cuda()
 
     WRIST_OFFSET[:,0] += args.wrist_x
     WRIST_OFFSET[:,1] += args.wrist_y
@@ -992,14 +1075,19 @@ if __name__ == "__main__":
         grasp_optimizer = optimizers[args.mode](robot_urdf,
                                                 ee_link_names=robot_configs[args.hand]["ee_link_name"],
                                                 ee_link_offsets=robot_configs[args.hand]["ee_link_offset"].tolist(),
+                                                anchor_link_names=robot_configs[args.hand]["collision_links"],
+                                                anchor_link_offsets=robot_configs[args.hand]["collision_offsets"].tolist(),
+                                                collision_pairs=robot_configs[args.hand]["collision_pairs"],
                                                 tip_bounding_box=[FINGERTIP_LB, FINGERTIP_UB],
                                                 ref_q = robot_configs[args.hand]["ref_q"].tolist(),
                                                 optimize_target=True,
+                                                optimize_palm=True, # NOTE: Experimental
                                                 num_iters=args.num_iters,
-                                                palm_offset=WRIST_OFFSET[0], # TODO: Should revise.
+                                                palm_offset=WRIST_OFFSET,
+                                                uncertainty=args.uncertainty,
+                                                # Useless for now
                                                 mass=args.mass, com=[args.com_x,args.com_y,args.com_z],
-                                                gravity=not args.disable_gravity,
-                                                uncertainty=args.uncertainty)
+                                                gravity=not args.disable_gravity)
     elif args.mode == "prob":
         grasp_optimizer = optimizers[args.mode](robot_urdf,
                                                 ee_link_names=robot_configs[args.hand]["ee_link_name"],
@@ -1028,7 +1116,7 @@ if __name__ == "__main__":
     compliance = compliance.repeat_interleave(num_guesses,dim=0)
     debug_tip_pose = grasp_optimizer.forward_kinematics(init_joint_angles, torch.from_numpy(WRIST_OFFSET).cuda())
     target_pose = debug_tip_pose.mean(dim=1, keepdim=True).repeat(1,4,1)
-    target_pose = target_pose + (debug_tip_pose - target_pose) * 0.5
+    target_pose = target_pose + (debug_tip_pose - target_pose) * 0.3
     if args.vis_gpis or True:
         for i in range(debug_tip_pose.shape[0]):
             tips, targets = vis_grasp(debug_tip_pose[i], target_pose[i])
@@ -1041,18 +1129,28 @@ if __name__ == "__main__":
         opt_tip_pose = grasp_optimizer.forward_kinematics(joint_angles, opt_palm_pose)
     #print("init joint angles:",init_joint_angles)
     # Visualize target and tip pose
+    grasp_vis = GraspVisualizer(robot_urdf, pcd)
     for i in range(opt_tip_pose.shape[0]):
         tips, targets = vis_grasp(opt_tip_pose[i], opt_target_pose[i])
         o3d.visualization.draw_geometries([pcd, *tips, *targets])
-    # After transformation
+        # grasp_vis.visualize_grasp(joint_angles=joint_angles[i].detach().cpu().numpy(), 
+        #                           wrist_pose=opt_palm_pose[i].detach().cpu().numpy(), 
+        #                           target_pose=opt_target_pose[i].detach().cpu().numpy())
     for i in range(opt_tip_pose.shape[0]):
-        tip_pose = opt_target_pose[i] + (opt_tip_pose[i] - opt_target_pose[i]) * 0.8
-        check_force_closure(tip_pose, opt_target_pose[i], opt_compliance[i], opt_R[i], opt_t[i], center[:3], args.mass, 10.0 if not args.disable_gravity else 0.0)
-        tips, targets = vis_grasp((opt_R[i]@opt_tip_pose[i].transpose(0,1)).transpose(0,1)+opt_t[i], opt_target_pose[i])
-        tf_pcd = copy.deepcopy(pcd)
-        tf_pcd.rotate(opt_R[i].cpu().numpy(), center=[0,0,0])
-        tf_pcd.translate(opt_t[i].cpu().numpy())
-        o3d.visualization.draw_geometries([tf_pcd, *tips, *targets])
+        # tips, targets = vis_grasp(opt_tip_pose[i], opt_target_pose[i])
+        # o3d.visualization.draw_geometries([pcd, *tips, *targets])
+        grasp_vis.visualize_grasp(joint_angles=init_joint_angles[0].detach().cpu().numpy(), 
+                                  wrist_pose=opt_palm_pose[i].detach().cpu().numpy(), 
+                                  target_pose=opt_target_pose[i].detach().cpu().numpy())
+    # After transformation
+    # for i in range(opt_tip_pose.shape[0]):
+    #     tip_pose = opt_target_pose[i] + (opt_tip_pose[i] - opt_target_pose[i]) * 0.8
+    #     check_force_closure(tip_pose, opt_target_pose[i], opt_compliance[i], opt_R[i], opt_t[i], center[:3], args.mass, 10.0 if not args.disable_gravity else 0.0)
+    #     tips, targets = vis_grasp((opt_R[i]@opt_tip_pose[i].transpose(0,1)).transpose(0,1)+opt_t[i], opt_target_pose[i])
+    #     tf_pcd = copy.deepcopy(pcd)
+    #     tf_pcd.rotate(opt_R[i].cpu().numpy(), center=[0,0,0])
+    #     tf_pcd.translate(opt_t[i].cpu().numpy())
+    #     o3d.visualization.draw_geometries([tf_pcd, *tips, *targets])
     print("Compliance and palm pose:",opt_compliance, opt_palm_pose.detach().cpu().numpy())
     np.save(f"data/contact_{args.exp_name}.npy", opt_tip_pose.cpu().detach().numpy())
     np.save(f"data/target_{args.exp_name}.npy", opt_target_pose.cpu().detach().numpy())

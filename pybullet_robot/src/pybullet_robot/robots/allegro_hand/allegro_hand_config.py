@@ -9,10 +9,10 @@ ROBOT_CONFIG = {
 
     'ee_link_name': ['link_3.0_tip','link_7.0_tip','link_11.0_tip','link_15.0_tip'],
 
-    'ref_q': np.array([0.0, np.pi/9, np.pi/9, np.pi/8, 
-                0.0, np.pi/9, np.pi/9, np.pi/8, 
-                0.0, np.pi/9, np.pi/9, np.pi/8, 
-                np.pi/3, np.pi/15, np.pi/4, np.pi/4]),
+    'ref_q': np.array([-0.12999636, 0.46788138, 0.438807, 0.48968481,
+                        -0.02283426, 0.26199859, 0.73503519, 0.75897687,
+                        0.12591666, 0.27977724, 0.65864516, 0.69471026,
+                        1.55866289, 0.16972215, -0.15359271,  1.68753028]),
 
     'collision_links':['link_3.0_tip','link_7.0_tip','link_11.0_tip','link_15.0_tip'],
 

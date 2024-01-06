@@ -44,6 +44,12 @@ def minimum_wrench_reward(tip_pose, contact_normals, mu, min_force):
     margin = compute_margin(forces, contact_normals, mu)
     return total_wrench, margin.unsqueeze(0), forces
 
+def dummy_minimum_wrench_reward(tip_pose, contact_normals, mu, min_force):
+    forces = contact_normals * tip_pose.norm(dim=1, keepdim=True)
+    total_wrench = forces.sum(dim=0).norm()
+    margin = compute_margin(forces, contact_normals, mu)
+    return total_wrench, margin.unsqueeze(0), forces
+
 def compute_margin(forces, normals, mu):
     """
     forces: (N, 3)
