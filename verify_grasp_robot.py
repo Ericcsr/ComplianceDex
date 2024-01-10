@@ -1,6 +1,7 @@
 import rospy
 import numpy as np
 import tf
+import time
 from scipy.spatial.transform import Rotation as R
 from argparse import ArgumentParser
 import json
@@ -131,6 +132,7 @@ if __name__ == "__main__":
     parser.add_argument("--floor_offset", type=float, default=0.0)
     parser.add_argument("--no_robot", action="store_true", default=False)
     parser.add_argument("--traj", type=str, default=None)
+    parser.add_argument("--num_interp", type=int, default=10)
 
     args = parser.parse_args()
 
@@ -159,6 +161,7 @@ if __name__ == "__main__":
         finger_pose = map_to_palm(finger_pose, np.array(wrist_pose)).flatten()
         print(finger_pose)
         target_pose = map_to_palm(target_pose, np.array(wrist_pose)).flatten()
+        
     else:
         joint_angles = np.load(f"data/joint_angle_{args.exp_name}.npy")[args.grasp_idx].flatten()
     # if HAND == "left":
@@ -215,7 +218,7 @@ if __name__ == "__main__":
     
     # Control the arm toward pregrasp pose
     if args.traj is not None:
-        traj = np.load(f"{args.traj}.npy")
+        traj = np.load(f"{args.traj}.npy")[args.grasp_idx]
         control_arm_traj(r, traj, arm_client, br)
     else:
         control_arm(r, wrist_pose, arm_client, br)
@@ -232,7 +235,7 @@ if __name__ == "__main__":
 
     if args.mode == "prob":
         req = GainParamRequest()
-        compliance = compliance * 2.0
+        compliance = compliance * 3
         req.kp = compliance.tolist()
         req.kd = (0.8 * np.sqrt(compliance)).tolist()
         res = hand_gain_client(req)
@@ -241,10 +244,13 @@ if __name__ == "__main__":
     if args.mode == "prob":
         input("Press to send request")
         print("Target pose:", target_pose)
-        req = PoseGoalRequest()
-        req.pose = target_pose.tolist()
-        res = hand_client(req)
-        print(res.success)
+        for i in range(args.num_interp):
+            req = PoseGoalRequest()
+            interp = float(i/args.num_interp)
+            req.pose = ((1-interp) * finger_pose + interp * target_pose).tolist()
+            res = hand_client(req)
+            rospy.sleep(0.1)
+            print(res.success)
 
     # Lift the hand up to verify grasp
     # if args.traj is not None:
