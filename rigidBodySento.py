@@ -49,12 +49,17 @@ def apply_external_world_force_on_local_point(pb, body_id, link_id, world_force,
 
 def move_object_local_frame(pb, frame_id, obj_ids, local_coords):
     link_com, link_quat = get_link_com_xyz_orn(pb, frame_id, -1)
+    link_linvel = get_link_com_linear_velocity(pb, frame_id, -1)
+    link_angvel = get_link_angular_velocity(pb, frame_id, -1)
     world_coords = []
+    world_vels = []
     for i in range(len(obj_ids)):
         world_coord = pybullet.multiplyTransforms(link_com, link_quat, local_coords[i], [0, 0, 0, 1])[0]
+        world_velocity = np.array(link_linvel) + np.cross(np.array(link_angvel), np.array(world_coord) - np.array(link_com))
         pb.resetBasePositionAndOrientation(obj_ids[i], world_coord, [0, 0, 0, 1])
         world_coords.append(world_coord)
-    return world_coords
+        world_vels.append(world_velocity)
+    return np.asarray(world_coords), np.asarray(world_vels)
 
 
 def get_link_com_linear_velocity(pb, body_id, link_id):

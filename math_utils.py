@@ -21,17 +21,23 @@ def solve_minimum_wrench(tip_poses, contact_normals, mu, min_force=5.0):
     R = torch.stack(Rs)
 
     constraints = [ns[i] @ F[i] <= -np.sqrt(1/(1+mu**2)) * cp.pnorm(F[i]) for i in range(r.shape[0])]
+    # minimum normal direction force.
     constraints = [ns[i] @ F[i] <= -min_force for i in range(r.shape[0])] + constraints
 
-    objective = cp.Minimize(0.5 * cp.pnorm(F[0]+F[1]+F[2]+F[3], p=2) + 
-                            0.5 * cp.pnorm(Rp[0]@F[0]+Rp[1]@F[1]+Rp[2]@F[2]+Rp[3]@F[3], p=2))
+    torque_var = Rp[0]@F[0]
+    for i in range(1,r.shape[0]):
+        torque_var += Rp[i]@F[i]
+
+    objective = cp.Minimize(0.5 * cp.pnorm(cp.sum(F,axis=0), p=2)+0.5 * cp.pnorm(torque_var, p=2))
     problem = cp.Problem(objective, constraints)
     assert problem.is_dpp()
     layer = CvxpyLayer(problem, parameters=ns+Rp, variables=[F])
     contact_normals = contact_normals.view(r.shape[0],1,3)
-    solution = layer(*contact_normals, *R, solver_args={"eps": 1e-8})[0]
+    solution = layer(*contact_normals, *R, solver_args={"eps": 1e-8, 
+                                                        "max_iters": 10000, 
+                                                        "acceleration_lookback": 0})[0]
     total_force = solution.sum(dim=0)
-    total_torque = torch.cross(r, solution).sum(dim=0)
+    total_torque = torch.cross(r, solution, dim=1).sum(dim=0)
     return solution, total_force.norm()+total_torque.norm()
 
 def minimum_wrench_reward(tip_pose, contact_normals, mu, min_force):
