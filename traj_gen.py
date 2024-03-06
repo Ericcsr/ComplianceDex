@@ -19,7 +19,7 @@ from scipy.spatial.transform import Rotation
 parser = ArgumentParser()
 parser.add_argument("--exp_name", type=str, required=True)
 parser.add_argument("--grasp_idx", type=int, default=0)
-parser.add_argument("--traj_len", type=int, default=5)
+parser.add_argument("--traj_len", type=int, default=6)
 parser.add_argument("--pause", action="store_true", default=False)
 args = parser.parse_args()
 
@@ -49,7 +49,7 @@ joint_pose = torch.tensor([-0.7153848657390822, 0.23627692865494376, -0.06146527
 pb.connect(pb.GUI)
 
 r = pb.loadURDF("assets/kuka_allegro/model_left.urdf", useFixedBase=True, basePosition=[-0.14134081,  0.50142033, -0.15], baseOrientation=[0, 0, -0.3826834, 0.9238795])
-scene = pb.loadURDF("curobo_ws/curobo/src/curobo/content/assets/scene/nvblox/scene.urdf", useFixedBase=True)
+scene = pb.loadURDF("curobo_ws/curobo/src/curobo/content/assets/scene/nvblox/scene_updated.urdf", useFixedBase=True)
 for j in range(7):
         pb.resetJointState(r, j, joint_pose[j])
 
@@ -64,10 +64,11 @@ for i in range(len(default_hand_q)):
 
 wrist_poses = np.load(f"data/wrist_{args.exp_name}.npy") 
 trajs = []
+successes = []
 for i in range(wrist_poses.shape[0]):
     wrist_pose = wrist_poses[i]
     wrist_ori = Rotation.from_euler("XYZ",wrist_pose[3:]).as_quat()[[3,0,1,2]]
-    target_pose = Pose(torch.from_numpy(wrist_pose[:3]+np.array([0.0, 0.0, 0.02])).float().cuda(), quaternion=torch.from_numpy(wrist_ori).float().cuda())
+    target_pose = Pose(torch.from_numpy(wrist_pose[:3]+np.array([0.0, 0.0, 0.0])).float().cuda(), quaternion=torch.from_numpy(wrist_ori).float().cuda())
     start_state = JointState.from_position(joint_pose.view(1, -1))
     t_start = time.time()
     result = motion_gen.plan(
@@ -75,15 +76,21 @@ for i in range(wrist_poses.shape[0]):
             target_pose,
             enable_graph=True,
             enable_opt=False,
-            max_attempts=100,
+            max_attempts=10,
             num_trajopt_seeds=10,
             num_graph_seeds=10)
+    if result is None:
+        print("IK Failed!")
+        successes.append(False)
+        trajs.append(joint_pose.cpu().numpy().reshape(1, -1).repeat(args.traj_len, axis=0))
+        continue
     print("Time taken: ", time.time()-t_start)
-    print(result.status, result.success, result.attempts)
+    print("Trajectory Generated: ", result.success)
+    if not result.success:
+        successes.append(False)
+        trajs.append(joint_pose.cpu().numpy().reshape(1, -1).repeat(args.traj_len, axis=0))
+        continue
     traj = result.get_interpolated_plan()
-    print("Trajectory Generated: ", result.success, result.optimized_dt.item(), traj.position.shape)
-    print(result.optimized_plan.position.shape)
-    print(result.graph_plan.position.shape)
 
     if args.pause:
         input()
@@ -95,15 +102,15 @@ for i in range(wrist_poses.shape[0]):
             pb.resetJointState(r, j, position[j])
         if args.pause: 
             input()
-        time.sleep(0.5)
+        time.sleep(0.1)
     position = result.debug_info["ik_solution"]
-    print(position.shape)
     for j in range(7):
         pb.resetJointState(r, j, position[j])
     if args.pause:
         input()
+    successes.append(True)
     trajs.append(np.vstack([traj.position.cpu().numpy(), position.cpu().numpy()]))
 
 trajs = np.stack(trajs)
 print("Number of feasible trajectories:", len(trajs))
-np.save("traj.npy", trajs)
+np.savez("traj.npz", trajs = trajs, successes = successes)

@@ -83,7 +83,7 @@ def optimize_target_compliance(tip_poses, target_poses, tip_normals, compliance,
     target_poses_z = torch.from_numpy(target_poses[:,:,[2]]).cuda().double()
     tip_normals = torch.from_numpy(tip_normals).cuda().double()
     compliance = torch.from_numpy(compliance).cuda().requires_grad_(True).double()
-    optimizer = torch.optim.RMSprop([{"params":target_poses_xy, "lr":0.01},
+    optimizer = torch.optim.RMSprop([{"params":target_poses_xy, "lr":0.02},
                                      {"params":compliance, "lr":0.2}])
     opt_target_poses = torch.cat([target_poses_xy, target_poses_z], dim=2).clone()
     opt_compliance = compliance.clone()
@@ -91,7 +91,7 @@ def optimize_target_compliance(tip_poses, target_poses, tip_normals, compliance,
     opt_margin = torch.zeros(tip_poses.shape[0], 3).cuda().double()
     opt_R = torch.zeros(tip_poses.shape[0], 3, 3).cuda().double()
     opt_t = torch.zeros(tip_poses.shape[0], 3).cuda().double()
-    for i in range(1000):
+    for i in range(200):
         optimizer.zero_grad()
         target_poses = torch.cat([target_poses_xy, target_poses_z], dim=2)
         reward, margin, force_norm, R, t = force_eq_reward(tip_poses, target_poses, compliance, friction_mu, tip_normals)
@@ -124,10 +124,15 @@ def optimize_target_compliance(tip_poses, target_poses, tip_normals, compliance,
 a = np.array([0.0, 0.0, 0.0])
 b = np.array([1.0, 0.0, 0.0])
 c = np.array([0.5, 1.0, 0.0])
+# a = np.array([0.0, 0.0, 0.0])
+# b = np.array([1.0, 0.0, 0.0])
+# c = np.array([1.0, 1.0, 0.0])
 n1 = np.array([0.0, -1.0, 0.0])
 n2 = np.array([2/np.sqrt(5), 1/np.sqrt(5), 0.0])
 n3 = np.array([-2/np.sqrt(5), 1/np.sqrt(5), 0.0])
-torque_max = np.array([10.0, 10.0])
+#n2 = np.array([1.0, 0.0, 0.0])
+#n3 = np.array([-np.sqrt(2)/2, np.sqrt(2)/2, 0.0])
+torque_max = np.array([12.0, 12.0])
 # Solve target pose and compliance
 num_envs = 4000
 num_exp = 100
@@ -141,8 +146,8 @@ r3 = construct_simple_arm(np.array([1, 1, -0.05]), -np.pi/2)
 o = construct_triangle(a,b,c)
 
 min_force = 5.0
-
-for e in range(num_exp):
+num_fk_feasible = 0
+while num_fk_feasible < 100:
     x = float(np.random.random(1) - 0.5)
     y = float(np.random.random(1) - 0.5)
     t = np.array([x, y, 0.0])
@@ -150,7 +155,8 @@ for e in range(num_exp):
     R = Rotation.from_euler("XYZ", np.array([0.0, 0.0, theta])).as_matrix()
 
 
-    tip_poses = np.array([[0.5, 0.0, 0.0],[0.25, 0.5, 0.0],[0.75, 0.5, 0.0]])
+    # tip_poses = np.array([[0.8, 0.0, 0.0],[0.2, 0.4, 0.0],[0.6, 0.8, 0.0]])
+    tip_poses = np.array([[0.5, 0.0, 0.0],[0.8, 0.4, 0.0],[0.2, 0.4, 0.0]])
     for i in range(3):
         tip_poses[i] = R@tip_poses[i] + t
     tip_poses = tip_poses.reshape(1,3,3).repeat(num_envs, axis=0)
@@ -177,8 +183,10 @@ for e in range(num_exp):
     joint_angles_3 = solve_arm_ik(tip_pose[2], r3)
 
     if joint_angles_1 is None or joint_angles_2 is None or joint_angles_3 is None:
-        print("IK failed!", joint_angles_1, joint_angles_2, joint_angles_3)
+        #print("IK failed!", joint_angles_1, joint_angles_2, joint_angles_3)
         continue
+    else:
+        num_fk_feasible += 1
     # set_joint_angles(r1, joint_angles_1)
     # set_joint_angles(r2, joint_angles_2)
     # set_joint_angles(r3, joint_angles_3)
@@ -207,7 +215,6 @@ for e in range(num_exp):
     flag_3 = (np.abs(torque3) < torque_max).all(axis=1) * (np.linalg.norm(F_after[:,2],axis=1) > min_force)
     flag = flag_1 * flag_2 * flag_3
     if flag.sum() == 0:
-        print("No feasible solutions!")
         continue
 
     opt_tip_pose_after = opt_tip_pose_after[flag]
@@ -230,7 +237,6 @@ for e in range(num_exp):
             post_success = True
             break
     if not post_success:
-        print("No feasible solutions!")
         continue
     # requires new jacobian inverse each env may different
     #torque1_after = np.einsum("bij,bjk->bik", jac_inv1, F_after[:,0].reshape(num_active_envs,3,1)).reshape(num_active_envs,2)
@@ -243,7 +249,7 @@ for e in range(num_exp):
     # Solve force closure once.
 
     solution, total_wrench = solve_minimum_wrench(torch.tensor(tip_poses[0]), torch.tensor(tip_normals[0]), 0.5, min_force=min_force)
-    print("total_wrench:",total_wrench, solution)
+    #print("total_wrench:",total_wrench, solution)
 
     # Check whether the force is obtainable
     F_fc = solution.numpy()
@@ -253,11 +259,11 @@ for e in range(num_exp):
 
     flag = (np.abs(torque1) < torque_max).all() * (np.abs(torque2) < torque_max).all() * (np.abs(torque3) < torque_max).all()
     print(torque1, torque2, torque3)
-    print("Feasibillity of fc solution:", flag) # How many feasible solutions
+    print("Feasibillity of fc solution:", flag, num_fk_feasible) # How many feasible solutions
     if flag:
         fc_num += 1
 
-print("Feasibility rate:", fc_num/feasible_num)
+print("Feasibility rate:", fc_num/feasible_num, fc_num, feasible_num)
 
 # mesh,o = construct_triangle(a,b,c)
 # mesh.compute_vertex_normals()

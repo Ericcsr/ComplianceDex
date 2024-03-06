@@ -124,7 +124,7 @@ class GPIS:
 
         return test_mean.cpu().numpy(), test_var.cpu().numpy(), test_normals.cpu().numpy(), np.asarray(lb), np.asarray(ub)
     
-    def topcd(self,test_mean, test_normal, lb, ub, steps=100):
+    def topcd(self,test_mean, test_normal, lb, ub, test_var=None, steps=100):
         lb, ub = np.asarray(lb), np.asarray(ub)
         
         if torch.is_tensor(test_mean):
@@ -147,6 +147,9 @@ class GPIS:
         normals = test_normal[mask]
         # convert index to pointcloud
         points = all_points[mask]
+        if test_var is not None:
+            var = test_var[mask]
+            return points, normals, var
         return points, normals
 
         

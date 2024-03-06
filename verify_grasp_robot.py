@@ -96,6 +96,7 @@ def control_arm_traj(r, traj, arm_client, tf_br):
     input("Execute?")
     for i in range(len(traj)):
         set_joint_angles(r, traj[i])
+        print("q:", traj[i])
         arm_req.pose = traj[i]
         result = arm_client(arm_req)
         if not result.success:
@@ -123,7 +124,7 @@ def control_arm_traj(r, traj, arm_client, tf_br):
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--exp_name", type=str, required=True)
-    parser.add_argument("--grasp_idx", type=int, default=0)
+    parser.add_argument("--grasp_idx", type=int, default=-1)
     parser.add_argument("--mode", type=str, default="prob")
     parser.add_argument("--use_config", action="store_true", default=False)
     parser.add_argument("--wrist_x", type=float, default=0.0)
@@ -136,7 +137,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    c = pb.connect(pb.GUI)
+    c = pb.connect(pb.DIRECT)
     r = pb.loadURDF("assets/kuka_allegro/model.urdf", 
                     basePosition = [-0.14134081,  0.50142033, -0.15],
                     baseOrientation = [0, 0, -0.3826834, 0.9238795],
@@ -144,6 +145,14 @@ if __name__ == "__main__":
     scene = pb.loadURDF("assets/scene/scene.urdf", basePosition=[-0.005, 0.015, -0.14], useFixedBase=True)
 
 
+    if args.traj is not None:
+        trajs = np.load(f"{args.traj}.npz")
+        successes = trajs["successes"]
+        if args.grasp_idx == -1:
+            args.grasp_idx = np.where(successes)[0][0]
+        print(args.grasp_idx)
+        traj = trajs["trajs"][args.grasp_idx]
+            
     if args.use_config:
         config = json.load(open(f"assets/{args.exp_name}/config.json"))
         args.wrist_x = config["wrist_x"]
@@ -188,7 +197,7 @@ if __name__ == "__main__":
     if args.mode == "prob":
         hand_gain_client.wait_for_service()
         req = GainParamRequest()
-        req.kp = np.array([200,200,200,200.0]).tolist()
+        req.kp = np.array([100,100,100,100.0]).tolist()
         req.kd = (0.8 * np.sqrt(compliance)).tolist()
         res = hand_gain_client(req)
         print(res.success)
@@ -218,7 +227,6 @@ if __name__ == "__main__":
     
     # Control the arm toward pregrasp pose
     if args.traj is not None:
-        traj = np.load(f"{args.traj}.npy")[args.grasp_idx]
         control_arm_traj(r, traj, arm_client, br)
     else:
         control_arm(r, wrist_pose, arm_client, br)
@@ -235,7 +243,7 @@ if __name__ == "__main__":
 
     if args.mode == "prob":
         req = GainParamRequest()
-        compliance = compliance * 3
+        compliance = compliance * 2.0
         req.kp = compliance.tolist()
         req.kd = (0.8 * np.sqrt(compliance)).tolist()
         res = hand_gain_client(req)
@@ -256,7 +264,24 @@ if __name__ == "__main__":
     # if args.traj is not None:
     pos, ori = get_ee_pose(r, traj[-1], id=7)
     euler = R.from_quat(ori).as_euler("XYZ")
-    pos[2] += 0.1
+    pos[2] += 0.05
     control_arm(r, pos.tolist()+euler.tolist(), arm_client, br)
     # else:
     #     control_arm(r, IDLE_WRIST_POSE, arm_client, br)
+
+    input("Press enter to end")
+
+    hand_gain_client.wait_for_service()
+    req = GainParamRequest()
+    req.kp = np.array([200,200,200,200.0]).tolist()
+    req.kd = (0.8 * np.sqrt(compliance)).tolist()
+    res = hand_gain_client(req)
+    print(res.success)
+    idle_pose_req = PoseGoalRequest()
+    idle_pose_req.pose = [0.05, -0.06, 0.0925, 0.05, 0.0, 0.0925, 0.05, 0.06, 0.0925, 0.08, -0.0071, -0.06]
+    result = hand_client(idle_pose_req)
+    if not result.success:
+        print("allegro hand fail to initialize")
+        exit(1)
+    control_arm(r,IDLE_WRIST_POSE, arm_client, br)
+    

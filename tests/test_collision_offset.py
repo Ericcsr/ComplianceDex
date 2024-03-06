@@ -7,14 +7,13 @@ from scipy.spatial.transform import Rotation
 
 pb.connect(pb.GUI)
 
-joint_angles = np.array([0.0, np.pi/9, np.pi/9, np.pi/6, 
-                         0.0, np.pi/9, np.pi/9, np.pi/6, 
-                         0.0, np.pi/9, np.pi/9, np.pi/6, 
-                         2 * np.pi/6, np.pi/9, np.pi/6, np.pi/6])
+joint_angles = np.array([-0.12999636, 0.46788138, 0.438807, 0.48968481,
+                        -0.02283426, 0.26199859, 0.73503519, 0.75897687,
+                        0.12591666, 0.27977724, 0.65864516, 0.69471026,
+                        1.55866289, 0.16972215, -0.15359271,  1.68753028])
 
-urdf_link = "pybullet_robot/src/pybullet_robot/robots/allegro_hand/models/allegro_hand_description_left.urdf"
-init_pose = [0.02, -0.04, 0.05, 0.0,0.0,3 * np.pi/4]
-
+urdf_link = "../pybullet_robot/src/pybullet_robot/robots/allegro_hand/models/allegro_hand_description_left.urdf"
+init_pose = [-0.03, 0.03, 0.05, -np.pi/2,-np.pi/4, 0.0]
 ori = Rotation.from_euler("XYZ", init_pose[3:])
 print(ori.as_matrix())
 r = pb.loadURDF(urdf_link, useFixedBase=True, basePosition=init_pose[:3], baseOrientation=ori.as_quat(),  flags=pb.URDF_MERGE_FIXED_LINKS)
