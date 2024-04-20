@@ -1,7 +1,7 @@
 import pybullet as pb
 import numpy as np
 import time
-from rigidBodySento import create_primitive_shape, apply_external_world_force_on_local_point, move_object_local_frame
+from utils.rigidBodySento import create_primitive_shape, apply_external_world_force_on_local_point, move_object_local_frame
 
 def construct_triangle(a,b,c):
     offset = np.array([0., 0., 0.05])

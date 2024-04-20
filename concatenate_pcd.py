@@ -1,67 +1,62 @@
 import torch
 import numpy as np
 import open3d as o3d
+from scipy.spatial.transform import Rotation
+import os
 from argparse import ArgumentParser
-from torchsdf import compute_sdf
-
-Rx = Rx = np.array([[1,0,0],[0,0,1],[0,-1,0]])
 
 parser = ArgumentParser()
 parser.add_argument("--exp_name", type=str, required=True)
-parser.add_argument("--prescale", type=float, default=1.0)
-parser.add_argument("--num_samples", type=int, default=32)
+parser.add_argument("--num_views", type=int, default=1)
 args = parser.parse_args()
 
-data = torch.load(f"assets/{args.exp_name}/ours_results.pth", map_location=torch.device("cpu"))['pc'].squeeze().numpy()
-delta = np.load(f"assets/{args.exp_name}/delta.npy")
-data = data * (1./args.prescale) + delta # By default scale w.r.t origin
-camera_pose = Rx @(np.asarray(np.load(f"assets/{args.exp_name}/tf.npz")["t"]) + np.array([0.0, -0.06, -0.15])) + delta
-partial_pcd = o3d.io.read_point_cloud(f"assets/{args.exp_name}/{args.exp_name}.ply")
-#partial_pcd.paint_uniform_color([1.0, 0.0, 0.0])
-completed_points = []
+camera_list = ["415","435","455"] # remove 415 for experiment
+if args.num_views == 1:
+    active_cameras = [0]
+elif args.num_views == 2:
+    active_cameras = [1, 2]
+elif args.num_views == 3:
+    active_cameras = [0, 1, 2]
 
-num_points = data.shape[1]
+pcds = []
+bottom = 0.013
+bound = 0.2
+for camera in camera_list:
+    pcd = o3d.io.read_point_cloud(f"assets/saved_pcds/{args.exp_name}/obj_cropped_{camera}.ply")
+    pcds.append(pcd)
+pcds = [pcds[i] for i in active_cameras]
+o3d.visualization.draw_geometries(pcds)
 
-for i in range(data.shape[0]):
-    point_samples = np.random.choice(num_points, args.num_samples, replace=False)
-    completed_points.append(data[i,point_samples])
+full_point_cloud = o3d.geometry.PointCloud()
+points = []
+colors = []
+for i in range(len(pcds)):
+    points.append(np.asarray(pcds[i].points))
+    colors.append(np.asarray(pcds[i].colors))
 
-completed_points = np.vstack(completed_points)
+points = np.concatenate(points, axis=0)
+colors = np.concatenate(colors, axis=0)
 
-# remove completed points that occlude observed points
-frustum = o3d.geometry.PointCloud()
-frustum_points = np.asarray(partial_pcd.points)
-frustum.points = o3d.utility.Vector3dVector(frustum_points)
-frustum.estimate_normals()
-frustum.orient_normals_consistent_tangent_plane(100)
-frustum = frustum.farthest_point_down_sample(1024)
-radius = 0.005
-frustum_mesh = o3d.geometry.TriangleMesh.create_from_point_cloud_ball_pivoting(frustum, o3d.utility.DoubleVector([radius, 2*radius, 4 * radius]))
+# Squash the points as floor
+bottom_points = points.copy()
+bottom_points[:,2] = bottom
+bottom_colors = colors.copy()
 
-scene = o3d.t.geometry.RaycastingScene()
-scene.add_triangles(o3d.t.geometry.TriangleMesh.from_legacy(frustum_mesh))
-src = np.zeros_like(completed_points)
-src[:] = camera_pose
-rays = o3d.core.Tensor(np.hstack([src, completed_points - src]), dtype=o3d.core.Dtype.Float32)
-ans = scene.cast_rays(rays)
-hit_dist = ans['t_hit'].numpy()
-mask = hit_dist < 1.0
-completed_points = completed_points[mask]
+full_point_cloud.points = o3d.utility.Vector3dVector(np.vstack([points, bottom_points]))
+full_point_cloud.colors = o3d.utility.Vector3dVector(np.vstack([colors, bottom_colors]))
+sampled = full_point_cloud.farthest_point_down_sample(1000)
+# remove outliers again
+sampled = sampled.remove_statistical_outlier(nb_neighbors=20, std_ratio=1.0)[0]
+cvx_hull, _ = sampled.compute_convex_hull()
+cvx_hull.compute_vertex_normals()
+cvx_hull.compute_triangle_normals()
 
-vis_pcd = o3d.geometry.PointCloud()
-vis_pcd.points = o3d.utility.Vector3dVector(completed_points)
-vis_pcd.paint_uniform_color([0.0, 0.0, 1.0])
-
-observed_points = np.asarray(partial_pcd.points).copy()
-np.random.shuffle(observed_points)
-
-np.savez(f"assets/{args.exp_name}/completed_pcd.npz", 
-         completed=completed_points, 
-         observed = observed_points)
-merged_pcd = o3d.geometry.PointCloud()
-merged_pcd.points = o3d.utility.Vector3dVector(np.vstack([np.asarray(partial_pcd.points), np.asarray(vis_pcd.points)]))
-merged_pcd.colors = o3d.utility.Vector3dVector(np.vstack([np.asarray(partial_pcd.colors), np.asarray(vis_pcd.colors)]))
-o3d.visualization.draw_geometries([merged_pcd])
-o3d.io.write_point_cloud(f"assets/{args.exp_name}/completed_pcd.ply", merged_pcd)
+o3d.visualization.draw_geometries([sampled])
+o3d.visualization.draw_geometries([cvx_hull])
+o3d.io.write_point_cloud("data/obj_cropped.ply",sampled)
+o3d.io.write_triangle_mesh("data/obj_cropped.obj",cvx_hull) # For arm motion planning collision detection
+points = np.asarray(sampled.points)
+np.random.shuffle(points)
+np.save("data/obj_cropped.npy", points)
 
 

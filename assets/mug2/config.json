@@ -1,9 +1,0 @@
-{
-    "wrist_x": -0.03,
-    "wrist_y": 0.015,
-    "wrist_z": 0.15,
-    "floor_offset":0.05,
-    "mass": 0.1,
-    "com": [0.0, 0.0, 0.0],
-    "friction": 0.5
-}
